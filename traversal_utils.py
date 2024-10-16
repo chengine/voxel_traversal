@@ -9,10 +9,111 @@ import torch
 #     'discretizations': Tensor[3],  number of voxels in each dimension
 #     'lower_bound': Tensor[3],     upper most corner
 #     'upper_bound': Tensor[3],     lower most corner
+#     'voxel_grid_values': Tensor[discretizations[0], discretizations[1], discretizations[2]]  3D tensor of voxel values # TODO Can be 4D tensor potentially
 # }
 
-def initialize_voxel_index(origins, )
+class VoxelGrid:
+    def __init__(self, param_dict, device):
+        self.discretizations = param_dict['discretizations']
 
+        ### IMPORTANT !!! ###
+        # Lower bound must be strictly less than upper bound #
+        self.lower_bound = param_dict['lower_bound']
+        self.upper_bound = param_dict['upper_bound']
+
+        assert torch.all(self.lower_bound - self.upper_bound <= 0.), "Lower bound must be less than upper bound"
+        ### IMPORTANT !!! ###
+
+        self.voxel_grid_values = param_dict['voxel_grid_values']
+        self.device = device
+
+        self.initialize_voxel_grid()
+
+    #TODO: May want to take in some pre-made voxel grid values
+    def initialize_voxel_grid(self):
+        if self.voxel_grid_values is None:
+            self.voxel_grid_values = torch.zeros(self.discretizations)
+        
+        self.cell_sizes = (self.upper_bound - self.lower_bound) / self.discretizations
+
+        grid_pts = torch.meshgrid([torch.linspace(self.lower_bound[i], self.upper_bound[i], self.discretizations[i]+1, device=self.device) for i in range(3)])
+        self.grid_vertices = torch.stack(grid_pts, dim=-1)      # n1 x n2 x n3 x 3
+        self.voxel_grid_centers = 0.5 * (self.grid_vertices[:-1, :-1, :-1] + self.grid_vertices[1:, 1:, 1:])
+        self.lower_grid_center = self.voxel_grid_centers[0, 0, 0]
+
+    def compute_voxel_index(self, points, debug=False):
+        # IMPORTANT !!! #
+        # This function does NOT handle points outside the voxel grid. It is the user's responsibility to ensure that the points are within the voxel grid, because
+        # there are many ways in which one could project outside points into the grid. 
+
+        ### IMPORTANT !!! ###
+        # We are going with the "round" convention for indexing.
+        voxel_index = torch.round( (points - self.lower_grid_center) / self.cell_sizes )
+
+        # Sanity check
+        is_in_bounds = []
+        for i in range(3):
+            if debug:
+                assert torch.all(voxel_index[:, i] >= 0) and torch.all(voxel_index[:, i] < self.discretizations[i]), "Points must be within the voxel grid"
+     
+            is_in_bounds.append( (voxel_index[:, i] >= 0) and (voxel_index[:, i] < self.discretizations[i]) )
+
+        is_in_bounds = torch.all( torch.stack(is_in_bounds, dim=-1), dim = -1 )
+
+        return voxel_index, is_in_bounds
+    
+    def project_points_into_voxel_grid(self, points, directions):
+        # Reference: https://tavianator.com/2022/ray_box_boundary.html#:~:text=Geometry&text=The%20slab%20method%20tests%20for,intersects%20the%20box%2C%20if%20any.&text=t%20%3D%20x%20%E2%88%92%20x%200%20x%20d%20.
+        ### IMPORTANT !!! ###
+        # The directions you pass DO NOT need to be normalized. They will be treated as line segments!
+
+        # If the point is in the voxel grid, we don't do anything.
+        # However, if the point is outside the voxel grid, we want to use 
+        # directions such that the voxel we return is the first voxel that the ray intersects.
+        voxel_index, is_in_bounds = self.compute_voxel_index(points)
+
+        # indices are within the voxel grid
+        in_bound_voxel_index = voxel_index[is_in_bounds]
+
+        # indices are outside the voxel grid
+        out_bound_directions = directions[~is_in_bounds] + torch.randn_like(directions[~is_in_bounds]) * 1e-6       # Add some noise to reduce degeneracy
+        out_bound_points = points[~is_in_bounds]
+
+        # Of these out of bound points, there are rays that ultimately intersect the voxel, and others that miss the voxel grid entirely.
+        # The general test:
+
+        t1 = (self.lower_bound[None] - out_bound_points) / out_bound_directions     # N x 3
+        t2 = (self.upper_bound[None] - out_bound_points) / out_bound_directions     # N x 3
+
+        t = torch.stack([t1, t2], dim=-1)       # N x 3 x 2
+        tmin = torch.min(t, dim=-1).values      # N x 3
+        tmax = torch.max(t, dim=-1).values      # N x 3
+
+        # If tmin > tmax for any dimension, the ray misses the voxel grid
+        misses = torch.any( (tmin - tmax) > 0., dim=-1)     # N
+
+        # Of the rays that we think intersect the voxel grid, we need to make sure that the line segment actually intersects the voxel grid (t < 1)
+        # TODO: We need to make sure the t's are also positive!!!
+        short = torch.all( tmin > 1., dim=-1)     # N
+
+        # These points will NEVER intersect the voxel grid
+        misses = torch.logical_or(misses, short)
+
+        out_bound_intersect_dirs = out_bound_directions[~misses]
+        out_bound_intersect_pts = out_bound_points[~misses]
+
+        # These are the points that do intersect the voxel grid but are outside the voxel grid
+        out_bound_intersect_dirs = out_bound_directions[~misses]
+        out_bound_intersect_pts = out_bound_points[~misses]
+
+        # For the intersecting points but are outside the voxel grid, we want to report the point where the ray intersects the voxel grid, its index, 
+        # and the truncated direction that is left.
+        smallest_t = torch.min(tmin, dim=-1).values[~misses]
+
+
+        # Returns the voxel index, the point, the truncated direction for points in the grid, and the indices of points that do intersect the grid
+        # Also returns the indices of points that don't ever intersect the voxel
+        return self.voxel_grid_centers[voxel_index.long()]
 
 # This function takes in the current point and voxel index, and returns the next point and voxel index
 def one_step_voxel_ray_intersection():
