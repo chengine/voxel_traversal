@@ -1,4 +1,5 @@
 import torch
+import time
 
 # All these functions are minor modifications to each other to make them fast for their use case
 # They all hinge on the core function: one-step voxel ray intersection
@@ -65,7 +66,7 @@ class VoxelGrid:
 
         ### IMPORTANT !!! ###
         # We are going with the "round" convention for indexing.
-        voxel_index = torch.round( (points - self.lower_grid_center) / self.cell_sizes )
+        voxel_index = torch.round( (points - self.lower_grid_center) / self.cell_sizes ).long()
 
         # Sanity check
         is_in_bounds = []
@@ -134,9 +135,12 @@ class VoxelGrid:
         remaining_progress = 1. - t_progress
 
         # and the point where the ray intersects the voxel grid
-        intersect_pts = out_bound_intersect_pts + out_bound_intersect_dirs * t_progress[:, None]
+        intersect_pts = out_bound_intersect_pts + out_bound_intersect_dirs * (t_progress[:, None])     # Add some noise to avoid numerical instability
         intersect_directions = out_bound_intersect_dirs * remaining_progress[:, None]
         intersect_voxel_index, _ = self.compute_voxel_index(intersect_pts)
+
+        in_bound_voxel_index = torch.clamp(in_bound_voxel_index, torch.zeros_like(self.discretizations).unsqueeze(0), self.discretizations.unsqueeze(0) - 1)
+        intersect_voxel_index = torch.clamp(intersect_voxel_index, torch.zeros_like(self.discretizations).unsqueeze(0), self.discretizations.unsqueeze(0) - 1)
 
         # This mask never intersects
         not_intersecting = torch.zeros_like(in_bounds, dtype=torch.bool)
@@ -155,16 +159,111 @@ class VoxelGrid:
             'out_bounds_intersect_direction': intersect_directions, # remaining vector after intersecting the grid
             'out_bounds_intersect_voxel_index': intersect_voxel_index,  # voxel index of the intersecting point with the voxel grid
         }
-
+     
         # Returns the voxel index, the point, the truncated direction for points in the grid, and the indices of points that do intersect the grid
         # Also returns the indices of points that don't ever intersect the voxel
         return output
 
-# This function takes in the current point and voxel index, and returns the next point and voxel index
-def one_step_voxel_ray_intersection():
+    # This function takes in the current point and voxel index, and returns the next point and voxel index
+    # NOTE: !!! IT MAY BE FASTER TO DO ALL THIS IN VOXEL COORDINATES RATHER THAN IN XYZ COORDINATES !!!
+    def one_step_voxel_ray_intersection(self, points, indices, directions):
+        # NOTE: !!! IMPORTANT !!! directions is the vector from the termination point to the point defined by points
+
+        # NOTE: This could be computed just once outside of this function!
+        sign_directions = torch.sign(directions + 1e-6*torch.randn_like(directions)).to(torch.int)
+        step_xyz = sign_directions * self.cell_sizes[None]     # N x 3, we add some noise to avoid numerical instability
+
+        # At each point, find the progress t to the next voxel boundary
+        if self.ndim == 2:
+            xyz_max = self.voxel_grid_centers[indices[:, 0], indices[:, 1]] + step_xyz/2
+        else:
+            xyz_max = self.voxel_grid_centers[indices[:, 0], indices[:, 1], indices[:, 2]] + step_xyz/2
+
+        t = (xyz_max - points) / directions
+
+        min_t, min_idx = torch.min(t, dim=-1)       # N, idx tells us which voxel index dimension to move in (+- 1)
+
+        # Update next voxel intersection point and voxel index
+        points = points + min_t[:, None] * directions
+        new_indices = indices.clone()
+        new_indices[torch.arange(len(min_idx)), min_idx] += sign_directions[torch.arange(len(min_idx)), min_idx]
+
+        new_indices = torch.clamp(new_indices, torch.zeros_like(self.discretizations).unsqueeze(0), self.discretizations.unsqueeze(0) - 1)
+
+        return points, new_indices, min_t
+
     
-# Computes intersection of ray with a voxel grid and returns a list of tensors of the voxel indices with their ray indices.
-# def compute_voxel_ray_intersection
+    # Computes intersection of ray with a voxel grid and returns a list of tensors of the voxel indices with their ray indices.
+    def compute_voxel_ray_intersection(self, points, directions):
+        # We assume directions is such that points + t * directions, where t = 1, is the termination point
+
+        # Project the points into the voxel grid
+        output = self.project_points_into_voxel_grid(points, directions)
+
+        # Segment out the rays that intersect the voxel grid
+        in_bounds_points = output['in_bounds_points']
+        in_bounds_directions = output['in_bounds_directions']
+        in_bounds_voxel_index = output['in_bounds_voxel_index']
+
+        # out_bounds_points = output['out_bounds_points']
+        # out_bounds_directions = output['out_bounds_directions']
+
+        # These are the Out-of-bounds rays, truncated so that they intersect the voxel grid
+        out_bounds_intersect_points = output['out_bounds_intersect_points']
+        out_bounds_intersect_directions = output['out_bounds_intersect_direction']
+        out_bounds_intersect_voxel_index = output['out_bounds_intersect_voxel_index']
+
+        # Concatenate the in-bounds and out-bounds intersecting rays
+        points = torch.cat([in_bounds_points, out_bounds_intersect_points], dim=0)
+        directions = torch.cat([in_bounds_directions, out_bounds_intersect_directions], dim=0)
+        voxel_index = torch.cat([in_bounds_voxel_index, out_bounds_intersect_voxel_index], dim=0)
+
+        # NOTE: It shouldn't be possible to get -1 or self.discretizations[None] in the voxel index
+        voxel_index = torch.clamp(voxel_index, torch.zeros_like(self.discretizations).unsqueeze(0), self.discretizations.unsqueeze(0) - 1)
+
+        # We completely ignore these rays
+        # TODO: Might want to store these ray indices for later use
+        # not_intersecting_points = points[output['not_intersecting']]
+        # not_intersecting_directions = directions[output['not_intersecting']]
+
+        #Store the voxel indices that have been passed through
+        #NOTE: Might want to store the (voxel, ray) indices for later use
+        voxel_intersections = [voxel_index]
+
+        # TODO: NOT TERMINATING!!!
+        #while len(points) > 0:
+        for i in range(30):
+            # Begin the incremental traversal procedure
+            next_points, next_indices, min_t = self.one_step_voxel_ray_intersection(points, voxel_index, directions)
+
+            # If the min_t is greater than 1, we have reached the end of the ray
+            terminated = min_t >= 1.
+
+            # We also want to terminate if the ray leaves the voxel grid (NOTE: !!! IMPORTANT !!! This is true only for a single voxel grid!!! We
+            # just need to truncate and store the ray if we have multiple voxel grids)
+            out_of_bounds = torch.any( torch.logical_or(next_indices < 0, next_indices - self.discretizations[None] > -1) , dim=-1)     #N
+
+            terminated = torch.logical_or(terminated, out_of_bounds)
+
+            # NOTE: Our termination here is the beginning of the NEXT voxel grid
+            terminated_points = next_points[terminated]
+
+            #voxel_intersections.append(voxel_index[terminated])
+
+            # If the min_t is less than 1, we have not reached the end of the ray
+            not_terminated = ~terminated
+            points = next_points[not_terminated]
+            voxel_index = next_indices[not_terminated]
+
+            # We want to truncate the directions to account for traversing by min_t
+            directions = (1. - min_t[not_terminated])[:, None] * directions[not_terminated]
+
+            print("Number of rays left: ", len(points))
+
+            voxel_intersections.append(voxel_index)
+
+        return torch.cat(voxel_intersections, dim=0)
+        #return voxel_index
 
 # Goes one step further and only return list of tensors of voxel indices where the voxel values are non-zero. 
 # May be able to just pass an argument into the previous function to do this.

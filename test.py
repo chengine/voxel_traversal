@@ -7,7 +7,7 @@ import time
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# torch.manual_seed(0)
+torch.manual_seed(0)
 
 ndim = 2
 param_dict = {
@@ -19,7 +19,7 @@ param_dict = {
 
 # ndim = 3
 # param_dict = {
-#     'discretizations': torch.tensor([100, 50, 50], device=device),
+#     'discretizations': torch.tensor([100, 100, 100], device=device),
 #     'lower_bound': torch.tensor([-0.5, -0.5, -0.5], device=device),
 #     'upper_bound': torch.tensor([0.5, 0.5, 0.5], device=device),
 #     'voxel_grid_values': None
@@ -27,8 +27,7 @@ param_dict = {
 
 vgrid = VoxelGrid(param_dict, ndim, device)
 
-
-nrays = 50
+nrays = 20
 
 points = 2*torch.rand(nrays, ndim, device=device)- 1.0
 directions = torch.randn(nrays, ndim, device=device)
@@ -56,28 +55,61 @@ print("Time taken: ", time.time() - tnow)
 
 in_bounds_points = output['in_bounds_points'].cpu().numpy()
 in_bounds_directions = output['in_bounds_directions'].cpu().numpy()
+in_bound_voxel_index = output['in_bounds_voxel_index'].cpu().numpy()
 
 out_bounds_points = output['out_bounds_points'].cpu().numpy()
 out_bounds_directions = output['out_bounds_directions'].cpu().numpy()
 
 out_bounds_intersect_points = output['out_bounds_intersect_points'].cpu().numpy()
 out_bounds_intersect_directions = output['out_bounds_intersect_direction'].cpu().numpy()
+out_bounds_intersect_voxel_index = output['out_bounds_intersect_voxel_index'].cpu().numpy()
 
 not_intersecting_points = points[output['not_intersecting']].cpu().numpy()
 not_intersecting_directions = directions[output['not_intersecting']].cpu().numpy()
 
 #%%
 
-# NOTE: THIS TESTS IF THE RAYS SHOULD BE CONSIDERED IN THE RAY TRACING ALGORITHM
+# tnow = time.time()
+# torch.cuda.synchronize()
+vgrid_intersects = vgrid.compute_voxel_ray_intersection(points, directions)
+# torch.cuda.synchronize()
+# print("Time taken to traverse: ", time.time() - tnow)
+#%%
 
+# NOTE: THIS VISUALIZES THE TRACING WITHIN THE GRID
+
+bottom_corners = vgrid.grid_vertices[:-1, :-1]
+mask = torch.zeros(bottom_corners.shape[:-1], dtype=torch.bool)
+mask[vgrid_intersects[:, 0], vgrid_intersects[:, 1]] = True
+# mask[in_bound_voxel_index[:, 0], in_bound_voxel_index[:, 1]] = True
+# mask[out_bounds_intersect_voxel_index[:, 0], out_bounds_intersect_voxel_index[:, 1]] = True
+
+bottom_corners = bottom_corners.reshape(-1, ndim).cpu().numpy()
+bottom_corners_mask = mask.reshape(-1).cpu().numpy()
+cell_size = vgrid.cell_sizes.cpu().numpy()
+
+#%%
 # Create figure and axes
-fig, ax = plt.subplots()
+fig, ax = plt.subplots(dpi=500)
+for mask, corner in zip(bottom_corners_mask, bottom_corners):
+    if mask:
+        facecolor = 'red'
+        alpha = 0.4
+    else:
+        facecolor = 'none'
+        alpha = 1.0
+        
+    # Create a Rectangle patch
+    rect = patches.Rectangle((corner[0], corner[1]), cell_size[0], cell_size[1], linewidth=1, edgecolor='r', facecolor=facecolor, alpha=alpha)
+    # Add the patch to the Axes
+    ax.add_patch(rect)
 
+# NOTE: THIS TESTS IF THE RAYS SHOULD BE CONSIDERED IN THE RAY TRACING ALGORITHM
 # Create a Rectangle patch
-rect = patches.Rectangle((-0.5, -0.5), 1, 1, linewidth=1, edgecolor='r', facecolor='none')
+# rect = patches.Rectangle((-0.5, -0.5), 1, 1, linewidth=1, edgecolor='r', facecolor='none')
 
-# Add the patch to the Axes
-ax.add_patch(rect)
+# # Add the patch to the Axes
+# ax.add_patch(rect)
 
 for i in range(in_bounds_points.shape[0]):
     ax.arrow(in_bounds_points[i, 0], in_bounds_points[i, 1], in_bounds_directions[i, 0], in_bounds_directions[i, 1], head_width=0.05, head_length=0.1, fc='g', ec='g')
@@ -90,23 +122,6 @@ for i in range(out_bounds_intersect_points.shape[0]):
 
 for i in range(not_intersecting_points.shape[0]):
     ax.arrow(not_intersecting_points[i, 0], not_intersecting_points[i, 1], not_intersecting_directions[i, 0], not_intersecting_directions[i, 1], head_width=0., head_length=0., fc='red', ec='red')
-
-plt.show()
-
-#%%
-
-# NOTE: THIS VISUALIZES THE TRACING WITHIN THE GRID
-# Create figure and axes
-fig, ax = plt.subplots()
-
-bottom_corners = vgrid.grid_vertices[:-1, :-1].reshape(-1, ndim).cpu().numpy()
-cell_size = vgrid.cell_sizes.cpu().numpy()
-
-for corner in bottom_corners:
-    # Create a Rectangle patch
-    rect = patches.Rectangle((corner[0], corner[1]), cell_size[0], cell_size[1], linewidth=1, edgecolor='r', facecolor='none')
-    # Add the patch to the Axes
-    ax.add_patch(rect)
 
 ax.set_xlim(-1., 1.)
 ax.set_ylim(-1., 1.)
