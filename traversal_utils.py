@@ -66,7 +66,7 @@ class VoxelGrid:
 
         ### IMPORTANT !!! ###
         # We are going with the "round" convention for indexing.
-        voxel_index = torch.round( (points - self.lower_grid_center) / self.cell_sizes ).long()
+        voxel_index = torch.round( (points - self.lower_grid_center) / self.cell_sizes ).to(torch.int32)
 
         # Sanity check
         is_in_bounds = []
@@ -166,12 +166,14 @@ class VoxelGrid:
 
     # This function takes in the current point and voxel index, and returns the next point and voxel index
     # NOTE: !!! IT MAY BE FASTER TO DO ALL THIS IN VOXEL COORDINATES RATHER THAN IN XYZ COORDINATES !!!
-    def one_step_voxel_ray_intersection(self, points, indices, directions):
+    def one_step_voxel_ray_intersection(self, points, indices, directions, sign_directions, step_xyz):
         # NOTE: !!! IMPORTANT !!! directions is the vector from the termination point to the point defined by points
 
-        # NOTE: This could be computed just once outside of this function!
-        sign_directions = torch.sign(directions + 1e-6*torch.randn_like(directions)).to(torch.int)
-        step_xyz = sign_directions * self.cell_sizes[None]     # N x 3, we add some noise to avoid numerical instability
+        B = len(points)
+        arange = torch.arange(B, device=self.device)
+
+        # tnow = time.time()
+        # torch.cuda.synchronize()
 
         # At each point, find the progress t to the next voxel boundary
         if self.ndim == 2:
@@ -179,23 +181,38 @@ class VoxelGrid:
         else:
             xyz_max = self.voxel_grid_centers[indices[:, 0], indices[:, 1], indices[:, 2]] + step_xyz/2
 
+        # torch.cuda.synchronize()
+        # print("Time taken for getting xyz_max: ", time.time() - tnow)
+
+        # tnow = time.time()
+        # torch.cuda.synchronize()
+
         t = (xyz_max - points) / directions
 
         min_t, min_idx = torch.min(t, dim=-1)       # N, idx tells us which voxel index dimension to move in (+- 1)
 
-        # Update next voxel intersection point and voxel index
-        points = points + min_t[:, None] * directions
-        new_indices = indices.clone()
-        new_indices[torch.arange(len(min_idx)), min_idx] += sign_directions[torch.arange(len(min_idx)), min_idx]
+        # torch.cuda.synchronize()
+        # print("Time taken for getting min: ", time.time() - tnow)
 
-        new_indices = torch.clamp(new_indices, torch.zeros_like(self.discretizations).unsqueeze(0), self.discretizations.unsqueeze(0) - 1)
+        # tnow = time.time()
+        # torch.cuda.synchronize()
+
+        # Update next voxel intersection point and voxel index
+        points = points + min_t.unsqueeze(-1) * directions
+        new_indices = indices.clone()
+        new_indices[arange, min_idx] += sign_directions[arange, min_idx]
+
+        # torch.cuda.synchronize()
+        # print("Time taken for updating points: ", time.time() - tnow)
 
         return points, new_indices, min_t
-
     
     # Computes intersection of ray with a voxel grid and returns a list of tensors of the voxel indices with their ray indices.
-    def compute_voxel_ray_intersection(self, points, directions):
+    def compute_voxel_ray_intersection(self, points, directions, termination_fn=None):
         # We assume directions is such that points + t * directions, where t = 1, is the termination point
+
+        # tnow = time.time()
+        # torch.cuda.synchronize()
 
         # Project the points into the voxel grid
         output = self.project_points_into_voxel_grid(points, directions)
@@ -230,59 +247,82 @@ class VoxelGrid:
         #NOTE: Might want to store the (voxel, ray) indices for later use
         voxel_intersections = [voxel_index]
 
+        # torch.cuda.synchronize()
+        # print("Time taken for initialization: ", time.time() - tnow)
+
+        # NOTE: This could be computed just once outside of this function!
+        sign_directions = torch.sign(directions + 1e-6*torch.randn_like(directions)).to(torch.int32)
+        step_xyz = sign_directions * self.cell_sizes.unsqueeze(0)     # N x 3, we add some noise to avoid numerical instability
+
         # TODO: NOT TERMINATING!!!
-        #while len(points) > 0:
-        for i in range(30):
+        counter = 0
+        while len(points) > 0:
+
+            # tnow = time.time()
+            # torch.cuda.synchronize()
+
             # Begin the incremental traversal procedure
-            next_points, next_indices, min_t = self.one_step_voxel_ray_intersection(points, voxel_index, directions)
+            next_points, next_indices, min_t = self.one_step_voxel_ray_intersection(points, voxel_index, directions, sign_directions, step_xyz)
+
+            # torch.cuda.synchronize()
+            # print("Time taken for one step intersection: ", time.time() - tnow)
+
+            # tnow = time.time()
+            # torch.cuda.synchronize()
 
             # If the min_t is greater than 1, we have reached the end of the ray
             terminated = min_t >= 1.
 
             # We also want to terminate if the ray leaves the voxel grid (NOTE: !!! IMPORTANT !!! This is true only for a single voxel grid!!! We
             # just need to truncate and store the ray if we have multiple voxel grids)
-            out_of_bounds = torch.any( torch.logical_or(next_indices < 0, next_indices - self.discretizations[None] > -1) , dim=-1)     #N
+            out_of_bounds = torch.any( torch.logical_or(next_indices < 0, next_indices - self.discretizations.unsqueeze(0) > -1) , dim=-1)     #N
 
             terminated = torch.logical_or(terminated, out_of_bounds)
 
-            # NOTE: Our termination here is the beginning of the NEXT voxel grid
-            terminated_points = next_points[terminated]
+            if termination_fn is not None:
+                terminated = torch.logical_or(terminated, termination_fn(next_points, next_indices))
 
-            #voxel_intersections.append(voxel_index[terminated])
+            terminated_points = next_points[terminated]
 
             # If the min_t is less than 1, we have not reached the end of the ray
             not_terminated = ~terminated
             points = next_points[not_terminated]
             voxel_index = next_indices[not_terminated]
 
-            # We want to truncate the directions to account for traversing by min_t
-            directions = (1. - min_t[not_terminated])[:, None] * directions[not_terminated]
+            sign_directions = sign_directions[not_terminated]
+            step_xyz = step_xyz[not_terminated]
 
-            print("Number of rays left: ", len(points))
+            # We want to truncate the directions to account for traversing by min_t
+            directions = (1. - min_t[not_terminated]).unsqueeze(-1) * directions[not_terminated]
+
+            #print("Number of rays left: ", len(points))
+            # print(min_t[not_terminated])
+            # print(voxel_index)
 
             voxel_intersections.append(voxel_index)
+
+            # torch.cuda.synchronize()
+            # print("Time taken for cleanup: ", time.time() - tnow)
+            # counter += 1
+            # print('Counter: ', counter)
 
         return torch.cat(voxel_intersections, dim=0)
         #return voxel_index
 
-# Goes one step further and only return list of tensors of voxel indices where the voxel values are non-zero. 
-# May be able to just pass an argument into the previous function to do this.
-# def compute_voxel_ray_intersection_nonzero
-
-# Renders the voxel grid, given the voxel grid, camera extrinsics, and intrinsics.
-# Makes use of the nerfacc library for fast rendering.
-# We can play with some of the approximations, or make it exact if need be.
-def render_from_voxel_grid(voxel_grid, origins, directions, max_steps):
-    # Initialize the voxel index
-    voxel_index = initialize_voxel_index(origins, directions)
-    # Initialize the output tensor
-    output = torch.zeros_like(origins)
-    # Loop over the max_steps
-    for i in range(max_steps):
-        # Compute the next voxel index
-        voxel_index = one_step_voxel_ray_intersection(voxel_index)
-        # Compute the voxel value at the voxel index
-        voxel_value = voxel_grid[voxel_index]
-        # Update the output tensor
-        output = output + voxel_value
-    return output
+    # Renders the voxel grid, given the voxel grid, camera extrinsics, and intrinsics.
+    # Makes use of the nerfacc library for fast rendering.
+    # We can play with some of the approximations, or make it exact if need be.
+    def render_from_voxel_grid(self, voxel_grid, origins, directions, max_steps):
+        # Initialize the voxel index
+        voxel_index = initialize_voxel_index(origins, directions)
+        # Initialize the output tensor
+        output = torch.zeros_like(origins)
+        # Loop over the max_steps
+        for i in range(max_steps):
+            # Compute the next voxel index
+            voxel_index = one_step_voxel_ray_intersection(voxel_index)
+            # Compute the voxel value at the voxel index
+            voxel_value = voxel_grid[voxel_index]
+            # Update the output tensor
+            output = output + voxel_value
+        return output

@@ -9,25 +9,25 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 torch.manual_seed(0)
 
-ndim = 2
-param_dict = {
-    'discretizations': torch.tensor([10, 20], device=device),
-    'lower_bound': torch.tensor([-0.5, -0.5], device=device),
-    'upper_bound': torch.tensor([0.5, 0.5], device=device),
-    'voxel_grid_values': None
-}
-
-# ndim = 3
+# ndim = 2
 # param_dict = {
-#     'discretizations': torch.tensor([100, 100, 100], device=device),
-#     'lower_bound': torch.tensor([-0.5, -0.5, -0.5], device=device),
-#     'upper_bound': torch.tensor([0.5, 0.5, 0.5], device=device),
+#     'discretizations': torch.tensor([10, 20], device=device),
+#     'lower_bound': torch.tensor([-0.5, -0.5], device=device),
+#     'upper_bound': torch.tensor([0.5, 0.5], device=device),
 #     'voxel_grid_values': None
 # }
 
+ndim = 3
+param_dict = {
+    'discretizations': torch.tensor([100, 100, 100], device=device),
+    'lower_bound': torch.tensor([-0.5, -0.5, -0.5], device=device),
+    'upper_bound': torch.tensor([0.5, 0.5, 0.5], device=device),
+    'voxel_grid_values': None
+}
+
 vgrid = VoxelGrid(param_dict, ndim, device)
 
-nrays = 20
+nrays = 10000000
 
 points = 2*torch.rand(nrays, ndim, device=device)- 1.0
 directions = torch.randn(nrays, ndim, device=device)
@@ -69,11 +69,13 @@ not_intersecting_directions = directions[output['not_intersecting']].cpu().numpy
 
 #%%
 
-# tnow = time.time()
-# torch.cuda.synchronize()
+#TODO: !!! THERE'S A HANGING ISSUE !!!#
+
+tnow = time.time()
+torch.cuda.synchronize()
 vgrid_intersects = vgrid.compute_voxel_ray_intersection(points, directions)
-# torch.cuda.synchronize()
-# print("Time taken to traverse: ", time.time() - tnow)
+torch.cuda.synchronize()
+print("Time taken to traverse: ", time.time() - tnow)
 #%%
 
 # NOTE: THIS VISUALIZES THE TRACING WITHIN THE GRID
@@ -112,13 +114,13 @@ for mask, corner in zip(bottom_corners_mask, bottom_corners):
 # ax.add_patch(rect)
 
 for i in range(in_bounds_points.shape[0]):
-    ax.arrow(in_bounds_points[i, 0], in_bounds_points[i, 1], in_bounds_directions[i, 0], in_bounds_directions[i, 1], head_width=0.05, head_length=0.1, fc='g', ec='g')
+    ax.arrow(in_bounds_points[i, 0], in_bounds_points[i, 1], in_bounds_directions[i, 0], in_bounds_directions[i, 1], head_width=0.005, head_length=0.01, fc='g', ec='g')
 
 for i in range(out_bounds_points.shape[0]):
-    ax.arrow(out_bounds_points[i, 0], out_bounds_points[i, 1], out_bounds_directions[i, 0], out_bounds_directions[i, 1], head_width=0.05, head_length=0.1, fc='orange', ec='orange', linestyle='dashed', alpha=0.4)
+    ax.arrow(out_bounds_points[i, 0], out_bounds_points[i, 1], out_bounds_directions[i, 0], out_bounds_directions[i, 1], head_width=0.005, head_length=0.01, fc='orange', ec='orange', linestyle='dashed', alpha=0.4)
 
 for i in range(out_bounds_intersect_points.shape[0]):
-    ax.arrow(out_bounds_intersect_points[i, 0], out_bounds_intersect_points[i, 1], out_bounds_intersect_directions[i, 0], out_bounds_intersect_directions[i, 1], head_width=0.05, head_length=0.1, fc='blue', ec='blue')
+    ax.arrow(out_bounds_intersect_points[i, 0], out_bounds_intersect_points[i, 1], out_bounds_intersect_directions[i, 0], out_bounds_intersect_directions[i, 1], head_width=0.005, head_length=0.01, fc='blue', ec='blue')
 
 for i in range(not_intersecting_points.shape[0]):
     ax.arrow(not_intersecting_points[i, 0], not_intersecting_points[i, 1], not_intersecting_directions[i, 0], not_intersecting_directions[i, 1], head_width=0., head_length=0., fc='red', ec='red')
