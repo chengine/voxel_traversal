@@ -1,5 +1,9 @@
+import numpy as np
 import torch
+import open3d as o3d
 import time
+
+from camera_utils import get_rays
 
 # All these functions are minor modifications to each other to make them fast for their use case
 # They all hinge on the core function: one-step voxel ray intersection
@@ -271,21 +275,26 @@ class VoxelGrid:
             # torch.cuda.synchronize()
 
             # If the min_t is greater than 1, we have reached the end of the ray
-            terminated = min_t >= 1.
+            out_of_length = min_t >= 1.
 
             # We also want to terminate if the ray leaves the voxel grid (NOTE: !!! IMPORTANT !!! This is true only for a single voxel grid!!! We
             # just need to truncate and store the ray if we have multiple voxel grids)
             out_of_bounds = torch.any( torch.logical_or(next_indices < 0, next_indices - self.discretizations.unsqueeze(0) > -1) , dim=-1)     #N
 
-            terminated = torch.logical_or(terminated, out_of_bounds)
+            out_of_length_or_bounds = torch.logical_or(out_of_length, out_of_bounds)
 
+            # NOTE: !!! THIS NEEDS TO BE HANDLED DIFFERENTLY FOR RENDERING THAN IF WE RAN OUT OF RAY LENGTH OR IF WE EXIT THE VOXEL GRID !!!#
             if termination_fn is not None:
-                terminated = torch.logical_or(terminated, termination_fn(next_points, next_indices))
+                terminated = termination_fn(next_points, directions, next_indices)
+                not_keep = torch.logical_or(out_of_length_or_bounds, terminated)
 
-            terminated_points = next_points[terminated]
+            else:
+                not_keep = out_of_length_or_bounds
+
+            terminated_points = next_points[not_keep]
 
             # If the min_t is less than 1, we have not reached the end of the ray
-            not_terminated = ~terminated
+            not_terminated = ~not_keep
             points = next_points[not_terminated]
             voxel_index = next_indices[not_terminated]
 
@@ -312,17 +321,83 @@ class VoxelGrid:
     # Renders the voxel grid, given the voxel grid, camera extrinsics, and intrinsics.
     # Makes use of the nerfacc library for fast rendering.
     # We can play with some of the approximations, or make it exact if need be.
-    def render_from_voxel_grid(self, voxel_grid, origins, directions, max_steps):
-        # Initialize the voxel index
-        voxel_index = initialize_voxel_index(origins, directions)
-        # Initialize the output tensor
-        output = torch.zeros_like(origins)
-        # Loop over the max_steps
-        for i in range(max_steps):
-            # Compute the next voxel index
-            voxel_index = one_step_voxel_ray_intersection(voxel_index)
-            # Compute the voxel value at the voxel index
-            voxel_value = voxel_grid[voxel_index]
-            # Update the output tensor
-            output = output + voxel_value
-        return output
+
+    # TODO: Might implement a near clip by just shifting the camera origin along some near_clip distance along ray direction.
+    def camera_voxel_intersection(self, K, c2w, far_clip):
+        W, H = int(K[0, 2] * 2), int(K[1, 2] * 2)
+        origins, directions = get_rays(H, W, K, c2w)
+
+        #normalize directions
+        directions = directions / torch.norm(directions, dim=-1, keepdim=True)
+
+        # Extend directions to far_clip
+        directions = directions * far_clip
+
+        # Compute the voxel intersections
+        output = self.compute_voxel_ray_intersection(origins, directions, termination_fn=None)
+
+
+
+    # def render_from_voxel_grid(self, voxel_grid, origins, directions, max_steps):
+    #     # Initialize the voxel index
+    #     voxel_index = initialize_voxel_index(origins, directions)
+    #     # Initialize the output tensor
+    #     output = torch.zeros_like(origins)
+    #     # Loop over the max_steps
+    #     for i in range(max_steps):
+    #         # Compute the next voxel index
+    #         voxel_index = one_step_voxel_ray_intersection(voxel_index)
+    #         # Compute the voxel value at the voxel index
+    #         voxel_value = voxel_grid[voxel_index]
+    #         # Update the output tensor
+    #         output = output + voxel_value
+    #     return output
+    
+    def create_mesh_from_points(self, points, colors=None):
+        # colors needs to be thhe same length as points
+
+        # Create a mesh from the voxel grid
+        voxel_index, in_bounds = self.compute_voxel_index(points)
+
+        assert torch.all(in_bounds), "All points must be within the voxel grid"
+
+        colors = colors[in_bounds]
+        voxel_index = voxel_index[in_bounds]
+
+        voxel_index_flatten = torch.tensor(np.ravel_multi_index(voxel_index.T.cpu().numpy(), tuple(self.discretizations)), device=self.device)
+
+        # Store the number of counts for each voxel
+        voxel_counts = torch.zeros(tuple(self.discretizations), device=self.device, dtype=voxel_index_flatten.dtype).flatten()
+        voxel_counts.scatter_add_(0, voxel_index_flatten, torch.ones_like(voxel_index_flatten))
+
+        voxel_counts = voxel_counts.reshape(tuple(self.discretizations))
+
+        # Store the colors for each voxel
+        voxel_colors = torch.zeros(tuple(self.discretizations) + (3,), device=self.device, dtype=colors.dtype).reshape(-1, 3)
+        voxel_colors.scatter_add_(0, voxel_index_flatten.unsqueeze(1).expand(-1, 3), colors)
+
+        voxel_colors = voxel_colors.reshape(tuple(self.discretizations) + (3,))
+
+        # Create the mesh
+        mask = voxel_counts > 0
+
+        grid_centers = self.voxel_grid_centers[mask]
+        grid_centers = grid_centers.view(-1, 3).cpu().numpy()
+
+        grid_colors = voxel_colors[mask]
+        grid_colors = grid_colors.view(-1, 3).cpu().numpy()
+
+        grid_colors = grid_colors / voxel_counts[mask].unsqueeze(1).cpu().numpy()
+
+        scene = o3d.geometry.TriangleMesh()
+        for cell_color, cell_center in zip(grid_colors, grid_centers):
+            box = o3d.geometry.TriangleMesh.create_box(width=self.cell_sizes[0].cpu().numpy(), 
+                                                        height=self.cell_sizes[1].cpu().numpy(), 
+                                                        depth=self.cell_sizes[2].cpu().numpy())
+            box = box.translate(cell_center, relative=False)
+            box.paint_uniform_color(cell_color)
+            scene += box
+
+        return scene
+
+        
