@@ -336,8 +336,6 @@ class VoxelGrid:
         # Compute the voxel intersections
         output = self.compute_voxel_ray_intersection(origins, directions, termination_fn=None)
 
-
-
     # def render_from_voxel_grid(self, voxel_grid, origins, directions, max_steps):
     #     # Initialize the voxel index
     #     voxel_index = initialize_voxel_index(origins, directions)
