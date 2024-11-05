@@ -39,15 +39,18 @@ class VoxelGrid:
 
         ### IMPORTANT !!! ###
 
+        self.voxel_grid_binary = param_dict['voxel_grid_binary']
         self.voxel_grid_values = param_dict['voxel_grid_values']
+        self.termination_fn = param_dict['termination_fn']
         self.device = device
 
         self.initialize_voxel_grid()
 
     #TODO: May want to take in some pre-made voxel grid values
     def initialize_voxel_grid(self):
-        if self.voxel_grid_values is None:
-            self.voxel_grid_values = torch.zeros(tuple(self.discretizations))
+        if self.voxel_grid_binary is None:
+            self.voxel_grid_binary = torch.zeros(tuple(self.discretizations), device=self.device, dtype=torch.bool)
+            self.voxel_grid_values = torch.zeros(tuple(self.discretizations) + (3,), device=self.device, dtype=torch.float32)
         
         self.cell_sizes = (self.upper_bound - self.lower_bound) / self.discretizations
 
@@ -212,7 +215,7 @@ class VoxelGrid:
         return points, new_indices, min_t
     
     # Computes intersection of ray with a voxel grid and returns a list of tensors of the voxel indices with their ray indices.
-    def compute_voxel_ray_intersection(self, points, directions, termination_fn=None):
+    def compute_voxel_ray_intersection(self, points, directions):
         # We assume directions is such that points + t * directions, where t = 1, is the termination point
 
         # tnow = time.time()
@@ -221,13 +224,14 @@ class VoxelGrid:
         # Project the points into the voxel grid
         output = self.project_points_into_voxel_grid(points, directions)
 
+        ray_indices = torch.arange(len(points), device=self.device)
+        not_intersecting_ray_indices = ray_indices[output['not_intersecting']]
+        intersecting_ray_indices = ray_indices[~output['not_intersecting']]
+
         # Segment out the rays that intersect the voxel grid
         in_bounds_points = output['in_bounds_points']
         in_bounds_directions = output['in_bounds_directions']
         in_bounds_voxel_index = output['in_bounds_voxel_index']
-
-        # out_bounds_points = output['out_bounds_points']
-        # out_bounds_directions = output['out_bounds_directions']
 
         # These are the Out-of-bounds rays, truncated so that they intersect the voxel grid
         out_bounds_intersect_points = output['out_bounds_intersect_points']
@@ -242,14 +246,17 @@ class VoxelGrid:
         # NOTE: It shouldn't be possible to get -1 or self.discretizations[None] in the voxel index
         voxel_index = torch.clamp(voxel_index, torch.zeros_like(self.discretizations).unsqueeze(0), self.discretizations.unsqueeze(0) - 1)
 
-        # We completely ignore these rays
-        # TODO: Might want to store these ray indices for later use
-        # not_intersecting_points = points[output['not_intersecting']]
-        # not_intersecting_directions = directions[output['not_intersecting']]
-
         #Store the voxel indices that have been passed through
         #NOTE: Might want to store the (voxel, ray) indices for later use
         voxel_intersections = [voxel_index]
+        ray_intersections = [intersecting_ray_indices]
+
+        exiting_ray_indices = []
+        out_of_length_ray_indices = []
+
+        terminated_voxel_index = []
+        terminated_ray_index = []
+        terminated_voxel_values = []
 
         # torch.cuda.synchronize()
         # print("Time taken for initialization: ", time.time() - tnow)
@@ -283,39 +290,71 @@ class VoxelGrid:
 
             out_of_length_or_bounds = torch.logical_or(out_of_length, out_of_bounds)
 
+            # NOTE! It is possible to have rays that are both out of bounds and out of length! We will treat them as out of bounds.
+            exiting_ray_indices.append(intersecting_ray_indices[out_of_bounds])
+            out_of_length_ray_indices.append(intersecting_ray_indices[out_of_length & ~out_of_bounds])
+
             # NOTE: !!! THIS NEEDS TO BE HANDLED DIFFERENTLY FOR RENDERING THAN IF WE RAN OUT OF RAY LENGTH OR IF WE EXIT THE VOXEL GRID !!!#
-            if termination_fn is not None:
-                terminated = termination_fn(next_points, directions, next_indices)
+            if self.termination_fn is not None:
+                terminated, values = self.termination_fn(next_points, directions, next_indices, self.voxel_grid_binary, self.voxel_grid_values)
                 not_keep = torch.logical_or(out_of_length_or_bounds, terminated)
+
+                # Store the terminated rays
+                terminated_voxel_index.append(next_indices[terminated])
+                terminated_ray_index.append(intersecting_ray_indices[terminated])
+                terminated_voxel_values.append(values[terminated])
 
             else:
                 not_keep = out_of_length_or_bounds
 
-            terminated_points = next_points[not_keep]
-
             # If the min_t is less than 1, we have not reached the end of the ray
-            not_terminated = ~not_keep
-            points = next_points[not_terminated]
-            voxel_index = next_indices[not_terminated]
+            keep = ~not_keep
+            points = next_points[keep]
+            voxel_index = next_indices[keep]
 
-            sign_directions = sign_directions[not_terminated]
-            step_xyz = step_xyz[not_terminated]
+            # Update the rays that continue marching
+            sign_directions = sign_directions[keep]
+            step_xyz = step_xyz[keep]
+            intersecting_ray_indices = intersecting_ray_indices[keep]
 
             # We want to truncate the directions to account for traversing by min_t
-            directions = (1. - min_t[not_terminated]).unsqueeze(-1) * directions[not_terminated]
+            directions = (1. - min_t[keep]).unsqueeze(-1) * directions[keep]
 
-            #print("Number of rays left: ", len(points))
-            # print(min_t[not_terminated])
-            # print(voxel_index)
-
+            # Store ray information
             voxel_intersections.append(voxel_index)
+            ray_intersections.append(intersecting_ray_indices)
+
 
             # torch.cuda.synchronize()
             # print("Time taken for cleanup: ", time.time() - tnow)
-            # counter += 1
-            # print('Counter: ', counter)
+            if counter % 50 == 0:
+                print('Ray Tracing Step: ', counter)
+                print("Number of rays remaining: ", len(points))
 
-        return torch.cat(voxel_intersections, dim=0)
+            counter += 1
+
+        # We want to store
+        output = {
+            # For voxels that do intersect the grid, 
+            # we store a tuple (voxel_index, ray_index) for every voxel-ray intersection
+            'voxel_intersections': torch.cat(voxel_intersections, dim=0),       
+            'ray_intersections': torch.cat(ray_intersections, dim=0),                            
+            
+            # For rays that terminate due to the termination fn, we store the voxel index, 
+            # the ray index, and the value of the grid at termination
+            'terminated_voxel_index': torch.cat(terminated_voxel_index, dim=0) if self.termination_fn is not None else None,
+            'terminated_ray_index': torch.cat(terminated_ray_index, dim=0) if self.termination_fn is not None else None,
+            'terminated_voxel_values': torch.cat(terminated_voxel_values, dim=0) if self.termination_fn is not None else None,
+
+            # For rays that (1) don't hit the voxel grid at all, (2) exit the voxel grid, or (3) reach the end of the ray length
+            # are stored by their ray index. Although functionally, these three categories are treated the same (i.e. they don't render to anything),
+            # the designations could be used for downstream tasks.
+            'not_intersecting_ray_index': not_intersecting_ray_indices,
+            'exiting_ray_index': torch.cat(exiting_ray_indices, dim=0),
+            'out_of_length_ray_index': torch.cat(out_of_length_ray_indices, dim=0),
+        }
+
+        return output
         #return voxel_index
 
     # Renders the voxel grid, given the voxel grid, camera extrinsics, and intrinsics.
@@ -325,7 +364,7 @@ class VoxelGrid:
     # TODO: Might implement a near clip by just shifting the camera origin along some near_clip distance along ray direction.
     def camera_voxel_intersection(self, K, c2w, far_clip):
         W, H = int(K[0, 2] * 2), int(K[1, 2] * 2)
-        origins, directions = get_rays(H, W, K, c2w)
+        origins, directions = get_rays(H, W, K, c2w, self.device)
 
         #normalize directions
         directions = directions / torch.norm(directions, dim=-1, keepdim=True)
@@ -333,8 +372,28 @@ class VoxelGrid:
         # Extend directions to far_clip
         directions = directions * far_clip
 
+        # Flatten origins and directions
+        origins = origins.view(-1, 3)
+        directions = directions.view(-1, 3)
+
         # Compute the voxel intersections
-        output = self.compute_voxel_ray_intersection(origins, directions, termination_fn=None)
+        output = self.compute_voxel_ray_intersection(origins, directions)
+
+        # Create image and depth
+        image = torch.zeros((H, W, 3), device=self.device)
+        depth = torch.zeros((H, W), device=self.device)
+
+        # Compute the depth and image
+        image = image.view(-1, 3)
+        image[output['terminated_ray_index']] = output['terminated_voxel_values']
+        image = image.view(H, W, 3)
+
+        depth = depth.view(-1)
+        depth[output['terminated_ray_index']] = torch.linalg.norm(self.voxel_grid_centers[output['terminated_voxel_index'][:, 0], 
+                                                                        output['terminated_voxel_index'][:, 1], 
+                                                                        output['terminated_voxel_index'][:, 2]] - c2w[:3, -1].unsqueeze(0), dim=-1)
+        
+        return image, depth
 
     # def render_from_voxel_grid(self, voxel_grid, origins, directions, max_steps):
     #     # Initialize the voxel index
@@ -350,6 +409,17 @@ class VoxelGrid:
     #         # Update the output tensor
     #         output = output + voxel_value
     #     return output
+
+    def populate_voxel_grid_from_points(self, points, values):
+        voxel_index, is_in_grid = self.compute_voxel_index(points)
+
+        # Only store the points that are in the grid
+        voxel_index = voxel_index[is_in_grid]
+
+        # Populate the voxel grid with the values
+        # NOTE: THIS WILL OVERWRITE THE VALUES! WE MIGHT WANT TO DO A SCATTER ADD OR SOMETHING MORE SOPHISTICATED.
+        self.voxel_grid_values[voxel_index[:, 0], voxel_index[:, 1], voxel_index[:, 2]] = values[is_in_grid]
+        self.voxel_grid_binary[voxel_index[:, 0], voxel_index[:, 1], voxel_index[:, 2]] = True
     
     def create_mesh_from_points(self, points, colors=None):
         # colors needs to be thhe same length as points
@@ -357,7 +427,7 @@ class VoxelGrid:
         # Create a mesh from the voxel grid
         voxel_index, in_bounds = self.compute_voxel_index(points)
 
-        assert torch.all(in_bounds), "All points must be within the voxel grid"
+        #assert torch.all(in_bounds), "All points must be within the voxel grid"
 
         colors = colors[in_bounds]
         voxel_index = voxel_index[in_bounds]

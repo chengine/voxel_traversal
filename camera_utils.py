@@ -2,7 +2,7 @@ import torch
 import numpy as np
 
 # Ray helpers
-def get_rays(H, W, K, c2w):
+def get_rays(H, W, K, c2w, device):
     """Takes camera calibration and pose to output ray origins and directions.
     Args:
         H: scalar. Number of pixels in height.
@@ -15,7 +15,7 @@ def get_rays(H, W, K, c2w):
     """
 
     # Hint: Using torch meshgrid and stack is very helpful here.
-    i, j = torch.meshgrid(torch.linspace(0, W-1, W), torch.linspace(0, H-1, H))  # pytorch's meshgrid has indexing='ij'
+    i, j = torch.meshgrid(torch.linspace(0, W-1, W, device=device), torch.linspace(0, H-1, H, device=device))  # pytorch's meshgrid has indexing='ij'
     i = i.t()
     j = j.t()
     dirs = torch.stack([(i-K[0][2])/K[0][0], -(j-K[1][2])/K[1][1], -torch.ones_like(i)], -1)

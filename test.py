@@ -22,12 +22,14 @@ param_dict = {
     'discretizations': torch.tensor([100, 100, 100], device=device),
     'lower_bound': torch.tensor([-0.5, -0.5, -0.5], device=device),
     'upper_bound': torch.tensor([0.5, 0.5, 0.5], device=device),
-    'voxel_grid_values': None
+    'voxel_grid_values': None,
+    'voxel_grid_binary': None,
+    'termination_fn': None
 }
 
 vgrid = VoxelGrid(param_dict, ndim, device)
 
-nrays = 10000000
+nrays = 1000000
 
 points = 2*torch.rand(nrays, ndim, device=device)- 1.0
 directions = torch.randn(nrays, ndim, device=device)
