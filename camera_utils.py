@@ -39,3 +39,14 @@ def get_rays_batch(H, W, K, c2w, device):
     rays_o = rays_o.permute(2, 0, 1, 3)
     print(rays_o.shape, rays_d.shape)
     return rays_o, rays_d
+
+def look_at(location, target, up):
+    z = (location - target)
+    z /= torch.norm(z)
+    x = torch.cross(up, z)
+    x /= torch.norm(x)
+    y = torch.cross(z, x)
+    y /= torch.norm(y)
+
+    R = torch.stack([x, y, z], dim=1)
+    return R
