@@ -7,7 +7,6 @@ import matplotlib
 import imageio
 from traversal_utils import *
 
-
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 torch.manual_seed(0)
@@ -21,6 +20,7 @@ mesh.translate(-mesh.get_center())
 points = np.asarray(mesh.vertices)
 
 bounding_box = mesh.get_axis_aligned_bounding_box()
+cmap = matplotlib.cm.get_cmap('turbo')
 
 def termination_fn(next_points, directions, next_indices, voxel_grid_binary, voxel_grid_values):
 
@@ -54,7 +54,6 @@ param_dict = {
     'termination_fn': termination_fn
 }
 
-cmap = matplotlib.cm.get_cmap('viridis')
 colors = cmap( (points[:, 2] - points[:, 2].min()) / (points[:, 2].max() - points[:, 2].min()))[:, :3]
 
 vgrid = VoxelGrid(param_dict, 3, device)
@@ -74,52 +73,54 @@ def look_at(location, target, up):
     y = torch.cross(z, x)
     y /= torch.norm(y)
 
-    R = torch.stack([x, y, z], dim=1)
+    R = torch.stack([x, y, z], dim=-1)
     return R
 
 K = torch.tensor([
-    [1000., 0., 500.],
-    [0., 1000., 500.],
+    [100., 0., 100.],
+    [0., 100., 100.],
     [0., 0., 1.]
 ], device=device)
 
-t = torch.linspace(0., 2*np.pi, 100, device=device)
+N_cameras = 1000
+t = torch.linspace(0., 2*np.pi, N_cameras, device=device)
 far_clip = 1.
 
 depth_images = []
 directions = []
 origins = []
-for i, t_ in enumerate(t):
-    c2w = torch.eye(4, device=device)
-    c2w[:3, 3] = torch.tensor([0.25*torch.cos(t_), 0.25*torch.sin(t_), 0.0], device=device)
 
-    c2w[:3, :3] = look_at(c2w[:3, 3], torch.tensor([0., 0., 0.], device=device), torch.tensor([0., 0., 1.], device=device))
+c2w = torch.eye(4, device=device)[None].expand(N_cameras, -1, -1).clone()
+c2w[:, :3, 3] = torch.stack([0.25*torch.cos(t), 0.25*torch.sin(t), torch.zeros_like(t)], dim=-1)
 
-    tnow = time.time()
-    torch.cuda.synchronize()
-    image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
-    depth = depth.cpu().numpy().reshape(1000, 1000, 1)
-    depth_normalized = depth / depth.max()
-    torch.cuda.synchronize()
-    print("Time taken: ", time.time() - tnow)
+target = torch.zeros(3, device=device)[None].expand(N_cameras, -1)
+up = torch.tensor([0., 0., 1.], device=device)[None].expand(N_cameras, -1)
+c2w[:, :3, :3] = look_at(c2w[:, :3, 3], target, up)
 
-    depth_images.append(depth)
-    directions.append(output['rays_d'])
-    origins.append(output['rays_o'])
+tnow = time.time()
+torch.cuda.synchronize()
+image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
+torch.cuda.synchronize()
+print("Time taken: ", time.time() - tnow)
 
-    # combined image
-    #combined_image = np.concatenate([image.cpu().numpy(), depth_normalized.repeat(3, axis=-1)], axis=1)
-
-    #imageio.imwrite(f'output/{i}.png', (combined_image * 255).astype(np.uint8))
+# combined image
+cmap = matplotlib.cm.get_cmap('turbo')
+for i, (img, dep) in enumerate(zip(image, depth)):
+    dep = dep / far_clip
+    combined_image = torch.concatenate([img[..., 0], dep], axis=1)
+    combined_image = cmap(combined_image.cpu().numpy())[..., :3]
+    imageio.imwrite(f'output/{i}.png', (combined_image * 255).astype(np.uint8))
 
     # fig, ax = plt.subplots(1, 2, figsize=(10, 5))
     # ax[0].imshow(image.cpu().numpy())
     # ax[1].imshow(depth_normalized, cmap='gray')
 
+#%%
+
 ### SEGMENT OUT THE RAYS THAT INTERSECTED THE VOXEL GRID ###
-depths = np.stack(depth_images, axis=0).reshape(-1)
-directions = torch.stack(directions, axis=0).cpu().numpy().reshape(-1, 3)
-origins = torch.stack(origins, axis=0).cpu().numpy().reshape(-1, 3)
+depths = depth.reshape(-1)
+directions = output['rays_d'].reshape(-1, 3)
+origins = output['rays_o'].reshape(-1, 3)
 
 # For depths greater than 0
 mask = depths > 0
@@ -128,11 +129,8 @@ directions = directions[mask]
 origins = origins[mask]
 
 # Termination points
-directions = directions / np.linalg.norm(directions, axis=-1, keepdims=True)
-xyzs = origins + depths[:, np.newaxis] * directions
-
-xyzs = torch.tensor(xyzs, device=device)
-directions = torch.tensor(directions, device=device)
+directions = directions / torch.linalg.norm(directions, axis=-1, keepdims=True)
+xyzs = origins + depths[:, None] * directions
 
 voxel_index, in_bounds = vgrid.compute_voxel_index(xyzs)
 voxel_index = voxel_index[in_bounds]
@@ -199,29 +197,38 @@ vgrid.termination_fn = termination_fn
 # %%
 # vgrid.voxel_grid_values = voxel_vals.reshape(tuple(vgrid.discretizations))[..., None].expand(-1, -1, -1, 3)
 
-for i, t_ in enumerate(t):
-    c2w = torch.eye(4, device=device)
-    c2w[:3, 3] = torch.tensor([0.25*torch.cos(3*t_), 0.25*torch.sin(3*t_), -0.25 + 0.5*i/len(t)], device=device)
+c2w = torch.eye(4, device=device)[None].expand(N_cameras, -1, -1).clone()
+c2w[:, :3, 3] = torch.stack([0.25*torch.cos(30*t), 0.25*torch.sin(30*t), -0.25 + 0.5*torch.arange(len(t), device=device)/len(t)], dim=-1)
 
-    c2w[:3, :3] = look_at(c2w[:3, 3], torch.tensor([0., 0., 0.], device=device), torch.tensor([0., 0., 1.], device=device))
+target = torch.zeros(3, device=device)[None].expand(N_cameras, -1)
+up = torch.tensor([0., 0., 1.], device=device)[None].expand(N_cameras, -1)
+c2w[:, :3, :3] = look_at(c2w[:, :3, 3], target, up)
 
-    tnow = time.time()
-    torch.cuda.synchronize()
-    image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
-    depth = depth.cpu().numpy().reshape(1000, 1000, 1)
-    depth_normalized = depth / depth.max()
+tnow = time.time()
+torch.cuda.synchronize()
 
-    image = image / image.max()
-    torch.cuda.synchronize()
-    print("Time taken: ", time.time() - tnow)
+c2ws = c2w
 
-    # combined image
-    cmap = matplotlib.cm.get_cmap('turbo')
-    combined_image = np.concatenate([image.cpu().numpy()[..., 0], depth_normalized.squeeze()], axis=1)
-    combined_image = cmap(combined_image)[..., :3]
+c2w_list = torch.split(c2ws, 300)
+images = []
+depths = []
+for c2w in c2w_list:
+    image, depth, _ = vgrid.camera_voxel_intersection(K, c2w, far_clip)
+    images.append(image)
+    depths.append(depth)
+
+images = torch.cat(images, dim=0)
+depths = torch.cat(depths, dim=0)
+torch.cuda.synchronize()
+print("Time taken: ", time.time() - tnow)
+
+# combined image
+cmap = matplotlib.cm.get_cmap('turbo')
+for i, (img, dep) in enumerate(zip(images, depths)):
+    dep = dep / far_clip
+    img = img / img.max()
+    combined_image = torch.concatenate([img[..., 0], dep], axis=1)
+    combined_image = cmap(combined_image.cpu().numpy())[..., :3]
     imageio.imwrite(f'output/{i}.png', (combined_image * 255).astype(np.uint8))
 
-    # fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-    # ax[0].imshow(image.cpu().numpy()[..., 0], cmap='turbo')
-    # ax[1].imshow(depth_normalized, cmap='turbo')
 # %%

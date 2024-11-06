@@ -3,7 +3,7 @@ import torch
 import open3d as o3d
 import time
 
-from camera_utils import get_rays
+from camera_utils import get_rays, get_rays_batch
 
 # All these functions are minor modifications to each other to make them fast for their use case
 # They all hinge on the core function: one-step voxel ray intersection
@@ -14,7 +14,8 @@ from camera_utils import get_rays
 #     'discretizations': Tensor[3],  number of voxels in each dimension
 #     'lower_bound': Tensor[3],     upper most corner
 #     'upper_bound': Tensor[3],     lower most corner
-#     'voxel_grid_values': Tensor[discretizations[0], discretizations[1], discretizations[2]]  3D tensor of voxel values # TODO Can be 4D tensor potentially
+#     'voxel_grid_values': Tensor[discretizations[0], discretizations[1], discretizations[2], C]  4D tensor of voxel values
+#     'voxel_grid_binary': Tensor[discretizations[0], discretizations[1], discretizations[2]]  3D tensor of binary values
 # }
 
 class VoxelGrid:
@@ -350,8 +351,8 @@ class VoxelGrid:
             # are stored by their ray index. Although functionally, these three categories are treated the same (i.e. they don't render to anything),
             # the designations could be used for downstream tasks.
             'not_intersecting_ray_index': not_intersecting_ray_indices,
-            'exiting_ray_index': torch.cat(exiting_ray_indices, dim=0),
-            'out_of_length_ray_index': torch.cat(out_of_length_ray_indices, dim=0),
+            'exiting_ray_index': torch.cat(exiting_ray_indices, dim=0) if len(exiting_ray_indices) > 0 else None,
+            'out_of_length_ray_index': torch.cat(out_of_length_ray_indices, dim=0) if len(out_of_length_ray_indices) > 0 else None,
         }
 
         return output
@@ -364,7 +365,17 @@ class VoxelGrid:
     # TODO: Might implement a near clip by just shifting the camera origin along some near_clip distance along ray direction.
     def camera_voxel_intersection(self, K, c2w, far_clip):
         W, H = int(K[0, 2] * 2), int(K[1, 2] * 2)
-        origins, directions = get_rays(H, W, K, c2w, self.device)
+
+        if c2w.dim() == 2:
+            origins, directions = get_rays(H, W, K, c2w, self.device)
+
+        else:
+            B = c2w.shape[0]    # batch number of poses
+            origins, directions = get_rays_batch(H, W, K, c2w, self.device)
+
+        # Flatten origins and directions
+        origins = origins.reshape(-1, 3)
+        directions = directions.reshape(-1, 3)
 
         #normalize directions
         directions = directions / torch.norm(directions, dim=-1, keepdim=True)
@@ -372,43 +383,47 @@ class VoxelGrid:
         # Extend directions to far_clip
         directions = directions * far_clip
 
-        # Flatten origins and directions
-        origins = origins.view(-1, 3)
-        directions = directions.view(-1, 3)
-
         # Compute the voxel intersections
         output = self.compute_voxel_ray_intersection(origins, directions)
 
-        # Create image and depth
-        image = torch.zeros((H, W, 3), device=self.device)
-        depth = torch.zeros((H, W), device=self.device)
+        if c2w.dim() == 2:
+            # render one image
 
-        # Compute the depth and image
-        image = image.view(-1, 3)
-        image[output['terminated_ray_index']] = output['terminated_voxel_values']
-        image = image.view(H, W, 3)
+            # Create image and depth
+            image = torch.zeros((H, W, 3), device=self.device)
+            depth = torch.zeros((H, W), device=self.device)
 
-        depth = depth.view(-1)
-        depth[output['terminated_ray_index']] = torch.linalg.norm(self.voxel_grid_centers[output['terminated_voxel_index'][:, 0], 
-                                                                        output['terminated_voxel_index'][:, 1], 
-                                                                        output['terminated_voxel_index'][:, 2]] - c2w[:3, -1].unsqueeze(0), dim=-1)
-        
-        return image, depth
+            # Compute the depth and image
+            image = image.view(-1, 3)
+            image[output['terminated_ray_index']] = output['terminated_voxel_values']
+            image = image.view(H, W, 3)
 
-    # def render_from_voxel_grid(self, voxel_grid, origins, directions, max_steps):
-    #     # Initialize the voxel index
-    #     voxel_index = initialize_voxel_index(origins, directions)
-    #     # Initialize the output tensor
-    #     output = torch.zeros_like(origins)
-    #     # Loop over the max_steps
-    #     for i in range(max_steps):
-    #         # Compute the next voxel index
-    #         voxel_index = one_step_voxel_ray_intersection(voxel_index)
-    #         # Compute the voxel value at the voxel index
-    #         voxel_value = voxel_grid[voxel_index]
-    #         # Update the output tensor
-    #         output = output + voxel_value
-    #     return output
+            depth = depth.view(-1)
+            depth[output['terminated_ray_index']] = torch.linalg.norm(self.voxel_grid_centers[output['terminated_voxel_index'][:, 0], 
+                                                                            output['terminated_voxel_index'][:, 1], 
+                                                                            output['terminated_voxel_index'][:, 2]] - c2w[:3, -1].unsqueeze(0), dim=-1)
+            
+        else:
+            # render batch of images
+            # Create image and depth
+            image = torch.zeros((B, H, W, 3), device=self.device)
+            depth = torch.zeros((B, H, W), device=self.device)
+
+            # Compute the depth and image
+            image = image.reshape(-1, 3)
+            image[output['terminated_ray_index']] = output['terminated_voxel_values']
+            image = image.reshape(B, H, W, 3)
+
+            depth = depth.reshape(-1)
+            depth[output['terminated_ray_index']] = torch.linalg.norm(self.voxel_grid_centers[output['terminated_voxel_index'][:, 0], 
+                                                                            output['terminated_voxel_index'][:, 1], 
+                                                                            output['terminated_voxel_index'][:, 2]] - origins[output['terminated_ray_index']], dim=-1)
+            depth = depth.reshape(B, H, W)
+
+        output['rays_o'] = origins
+        output['rays_d'] = directions
+
+        return image, depth, output
 
     def populate_voxel_grid_from_points(self, points, values):
         voxel_index, is_in_grid = self.compute_voxel_index(points)
