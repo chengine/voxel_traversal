@@ -15,7 +15,8 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 torch.manual_seed(0)
 
-obj_path = 'stanford-bunny.obj'
+#obj_path = 'stanford-bunny.obj'
+obj_path = 'bond/source/Bond_Test.glb'
 
 # Reads in mesh
 mesh = o3d.io.read_triangle_mesh(obj_path)
@@ -76,7 +77,7 @@ vgrid = VoxelGrid(param_dict, 3, device)
 vgrid.populate_voxel_grid_from_points(torch.tensor(points, device=device), torch.tensor(colors, device=device, dtype=torch.float32))
 
 # Optional: visualize the voxel grid
-# scene = vgrid.create_mesh_from_points(torch.tensor(points, device=device), torch.tensor(colors, device=device, dtype=torch.float32))
+# scene = vgrid.create_mesh_from_points(torch.tensor(points, device=device), torch.tensor(np.asarray(mesh.vertex_colors), device=device, dtype=torch.float32))
 # o3d.visualization.draw_geometries([scene])
 
 #%%
@@ -106,6 +107,8 @@ for i, t_ in enumerate(t):
     torch.cuda.synchronize()
     image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
     depth_normalized = depth / depth.max()
+    
+    depth_mask = (depth == 0).squeeze()
     torch.cuda.synchronize()
     print("Time taken: ", time.time() - tnow)
 
@@ -115,8 +118,8 @@ for i, t_ in enumerate(t):
 
     # Optional: Save and visualize the images
     # combined image
-    #combined_image = np.concatenate([image.cpu().numpy(), depth_normalized.repeat(3, axis=-1)], axis=1)
-    #imageio.imwrite(f'output/{i}.png', (combined_image * 255).astype(np.uint8))
+    # combined_image = np.concatenate([image.cpu().numpy(), depth_normalized.cpu().numpy().repeat(3, axis=-1)], axis=1)
+    # imageio.imwrite(f'output/{i}.png', (combined_image * 255).astype(np.uint8))
 
     # fig, ax = plt.subplots(1, 2, figsize=(10, 5))
     # ax[0].imshow(image.cpu().numpy())

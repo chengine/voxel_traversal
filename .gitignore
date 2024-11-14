@@ -1,4 +1,8 @@
 output/*
 *.png
 *.jpg
-*.gif
+*.glb
+*.gltf
+*.obj
+*
+!*.py

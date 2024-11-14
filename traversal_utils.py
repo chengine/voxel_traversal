@@ -402,7 +402,8 @@ class VoxelGrid:
             depth[output['terminated_ray_index']] = torch.linalg.norm(self.voxel_grid_centers[output['terminated_voxel_index'][:, 0], 
                                                                             output['terminated_voxel_index'][:, 1], 
                                                                             output['terminated_voxel_index'][:, 2]] - c2w[:3, -1].unsqueeze(0), dim=-1)
-            
+            depth = depth.view(H, W, 1) 
+
         else:
             # render batch of images
             # Create image and depth
