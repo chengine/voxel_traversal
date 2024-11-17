@@ -84,7 +84,9 @@ print("Time taken to traverse: ", time.time() - tnow)
 
 bottom_corners = vgrid.grid_vertices[:-1, :-1]
 mask = torch.zeros(bottom_corners.shape[:-1], dtype=torch.bool)
-mask[vgrid_intersects[:, 0], vgrid_intersects[:, 1]] = True
+voxel_intersections = vgrid_intersects["voxel_intersections"]
+mask[voxel_intersections[:, 0], voxel_intersections[:, 1]] = True
+# mask[vgrid_intersects[:, 0], vgrid_intersects[:, 1]] = True
 # mask[in_bound_voxel_index[:, 0], in_bound_voxel_index[:, 1]] = True
 # mask[out_bounds_intersect_voxel_index[:, 0], out_bounds_intersect_voxel_index[:, 1]] = True
 
@@ -92,6 +94,7 @@ bottom_corners = bottom_corners.reshape(-1, ndim).cpu().numpy()
 bottom_corners_mask = mask.reshape(-1).cpu().numpy()
 cell_size = vgrid.cell_sizes.cpu().numpy()
 
+print("plotting")
 #%%
 # Create figure and axes
 fig, ax = plt.subplots(dpi=500)
@@ -129,6 +132,7 @@ for i in range(not_intersecting_points.shape[0]):
 
 ax.set_xlim(-1., 1.)
 ax.set_ylim(-1., 1.)
-plt.show()
+# plt.show()
+plt.savefig("./plots/plot.png")
 
 #%%
