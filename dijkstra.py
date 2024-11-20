@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import open3d as o3d
 import time
+import copy
 import matplotlib
 import imageio
 import matplotlib.pyplot as plt
@@ -91,13 +92,12 @@ class Planner():
 
         t = torch.linspace(0., 2*np.pi, self.N_training_cameras, device=self.device)
         
-
         depth_images = []
         directions = []
         origins = []
 
         c2w = torch.eye(4, device=self.device)[None].expand(self.N_training_cameras, -1, -1).clone()
-        c2w[:, :3, 3] = torch.stack([0.25*torch.cos(t), 0.25*torch.sin(t), torch.zeros_like(t)], dim=-1)
+        c2w[:, :3, 3] = torch.stack([ torch.zeros_like(t),0.25*torch.cos(t),  0.25*torch.sin(t)], dim=-1)
 
         target = torch.zeros(3, device=self.device)[None].expand(self.N_training_cameras, -1)
         up = torch.tensor([0., 0., 1.], device=self.device)[None].expand(self.N_training_cameras, -1)
@@ -188,7 +188,7 @@ class Planner():
 
         c2ws = c2w
 
-        c2w_list = torch.split(c2ws, 300)
+        c2w_list = torch.split(c2ws, 50)
         images = []
         depths = []
         for c2w in c2w_list:
@@ -206,15 +206,22 @@ class Planner():
         images = images / (torch.amax(images, dim=(1, 2))[:, None, None] + 1e-6)
 
         uncertainty_metric = torch.sum(images, dim=(1, 2))[..., 0]
-        return uncertainty_metric
+        return uncertainty_metric, images.cpu().numpy()
 
     def generate_dijkstra_paths(self, source, plot_graph = True):
         voxel_grid_3d = self.vgrid.voxel_grid_binary.cpu().numpy()
         voxel_grid_2d = voxel_grid_3d[:,:,48:52] # 1 where occupied, 0 where unoccupied
 
         dist_field = dijkstra3d.euclidean_distance_field(np.invert(voxel_grid_2d), source=source)
+        inf_indices = np.where(dist_field == np.inf)
+        pixel_radius = 10
+        for i in range(pixel_radius):
+            dist_field[inf_indices[0]+i, inf_indices[1],inf_indices[2]] = np.inf
+            dist_field[inf_indices[0]-i, inf_indices[1],inf_indices[2]] = np.inf
+            dist_field[inf_indices[0], inf_indices[1]+i,inf_indices[2]] = np.inf
+            dist_field[inf_indices[0], inf_indices[1]-i,inf_indices[2]] = np.inf
         print("dist_field: ", dist_field[25,:,0])
-        parents = dijkstra3d.parental_field(dist_field, source=source, connectivity=6)
+        parents = dijkstra3d.parental_field(dist_field, source=source, connectivity=26)
 
         ax3 = plt.figure().add_subplot(projection='3d')
         ax3.voxels(voxel_grid_2d,alpha=1)
@@ -223,22 +230,25 @@ class Planner():
         voxel_inds = np.vstack((voxel_inds[0].flatten(),voxel_inds[1].flatten(),voxel_inds[2].flatten()))
         trajectories = []
         print("num trajectories: ", voxel_inds.shape[1])
-        for i in range(0,voxel_inds.shape[1], 5001):
+        for i in range(0,voxel_inds.shape[1], 1000):
             target = tuple(voxel_inds[:,np.random.randint(voxel_inds.shape[1])])
             if voxel_grid_2d[target[0], target[1], target[2]] == 1:
                 print("occupied target!")
                 continue
-            path = dijkstra3d.path_from_parents(parents, target=tuple(target))
             cost = dist_field[target[0], target[1], target[2]]
             if cost == np.inf:
                 print("infinite cost!")
                 continue
+            path = dijkstra3d.path_from_parents(parents, target=tuple(target))
             if path.shape[0] <= 1:
                 print("no path found!")
                 continue
+            # remap path to 3D voxel grid:
+            path_3d = copy.deepcopy(path)
+            path_3d[:,2] += 48
             print("path: ", path.shape, " target: ", target, " cost: ", cost)
             positions = []
-            for position in path:
+            for position in path_3d:
                 positions.append(list(position))
             ax3.plot(path[:,0], path[:,1], path[:,2],c='g')
             ax3.scatter(target[0], target[1], target[2],c='r')
@@ -250,16 +260,18 @@ class Planner():
         
     def score_paths(self, trajectories, eigvals, eigvecs):
         trajectory_uncertainties = []
+        trajectory_images = []
         for trajectory in trajectories:
             positions = np.asarray(trajectory, dtype=np.int32)
             traj_length = positions.shape[0]
-            if traj_length > 50:
-                positions = positions[0:50, :]
+            # if traj_length > 50:
+            #     positions = positions[0:50, :]
             positions_tensor = torch.from_numpy(positions)
-            trajectory_uncertainty_metric = self.generate_info_gain(positions_tensor, eigvals, eigvecs)
-            total_trajectory_uncertainty_metric = torch.sum(trajectory_uncertainty_metric) # consider taking a mean over the trajectory
+            trajectory_uncertainty_metric, images = self.generate_info_gain(positions_tensor, eigvals, eigvecs)
+            total_trajectory_uncertainty_metric = torch.mean(trajectory_uncertainty_metric) # consider taking a mean over the trajectory
             trajectory_uncertainties.append(total_trajectory_uncertainty_metric.item())
-        return np.asarray(trajectory_uncertainties)
+            trajectory_images.append(images)
+        return np.asarray(trajectory_uncertainties), trajectory_images
 
     def choose_best_path(self, trajectory_uncertainties):
         indices = np.argsort(trajectory_uncertainties)
@@ -270,11 +282,17 @@ def main():
     planner_class = Planner()
     eigvals, eigvecs = planner_class.generate_training_view_info()
     trajectories, ax3 = planner_class.generate_dijkstra_paths(source=(0,0,0))
-    uncertainties = planner_class.score_paths(trajectories, eigvals, eigvecs)
+    uncertainties, images = planner_class.score_paths(trajectories, eigvals, eigvecs)
     print("uncertainties: ", uncertainties)
     best_idx = planner_class.choose_best_path(uncertainties)
     best_trajectory = trajectories[best_idx]
-    ax3.plot(best_trajectory[:,0], best_trajectory[:,1], best_trajectory[:,2], c='m')
+    best_images = images[best_idx]
+    for i, image in enumerate(best_images):
+        # image = image_tensor.cpu().numpy()
+        image = image / (image.max() + 1e-6)
+        image = image * 255
+        cv2.imwrite("./traj_images/frame_"+str(i).zfill(3)+".png", image)
+    ax3.plot(best_trajectory[:,0], best_trajectory[:,1], 0*best_trajectory[:,2], c='m')
     ax3.view_init(azim=0, elev=90)
     plt.savefig("./plots/image_dijkstra_top.png")
     
