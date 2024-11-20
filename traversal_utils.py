@@ -46,6 +46,7 @@ class VoxelGrid:
         self.device = device
 
         self.initialize_voxel_grid()
+        self.termination_value_type = param_dict['termination_value_type']
 
     #TODO: May want to take in some pre-made voxel grid values
     def initialize_voxel_grid(self):
@@ -297,7 +298,7 @@ class VoxelGrid:
 
             # NOTE: !!! THIS NEEDS TO BE HANDLED DIFFERENTLY FOR RENDERING THAN IF WE RAN OUT OF RAY LENGTH OR IF WE EXIT THE VOXEL GRID !!!#
             if self.termination_fn is not None:
-                terminated, values = self.termination_fn(next_points, directions, next_indices, self.voxel_grid_binary, self.voxel_grid_values)
+                terminated, values = self.termination_fn(next_points, directions, next_indices, self.voxel_grid_binary, self.voxel_grid_values,self.termination_value_type)
                 not_keep = torch.logical_or(out_of_length_or_bounds, terminated)
 
                 # Store the terminated rays

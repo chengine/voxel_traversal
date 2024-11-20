@@ -56,7 +56,8 @@ param_dict = {
     'upper_bound': torch.tensor(bounding_box.get_max_bound(), device=device),
     'voxel_grid_values': None,
     'voxel_grid_binary': None,
-    'termination_fn': termination_fn
+    'termination_fn': termination_fn,
+    'termination_value_type': "colors"
 }
 
 colors = cmap( (points[:, 2] - points[:, 2].min()) / (points[:, 2].max() - points[:, 2].min()))[:, :3]
@@ -111,6 +112,7 @@ image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
 torch.cuda.synchronize()
 print("Time taken: ", time.time() - tnow)
 
+input("press enter to continue")
 #%%
 
 ### SEGMENT OUT THE RAYS THAT INTERSECTED THE VOXEL GRID ###
