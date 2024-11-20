@@ -26,12 +26,13 @@ class Planner():
         self.mesh.translate(-self.mesh.get_center())
         self.points = np.asarray(self.mesh.vertices)
         self.bounding_box = self.mesh.get_axis_aligned_bounding_box()
+        print("bounding_box: ", self.bounding_box.get_min_bound())
         self.cmap = matplotlib.cm.get_cmap('turbo')
         # Parameter initializations of VoxelGrid
         self.param_dict = {
                 'discretizations': torch.tensor([100, 100, 100], device=self.device),
-                'lower_bound': torch.tensor(self.bounding_box.get_min_bound(), device=self.device),
-                'upper_bound': torch.tensor(self.bounding_box.get_max_bound(), device=self.device),
+                'lower_bound': torch.tensor([-0.15, -0.15, -0.15], device=self.device),
+                'upper_bound': torch.tensor([0.15, 0.15, 0.15], device=self.device),
                 'voxel_grid_values': None,
                 'voxel_grid_binary': None,
                 'termination_fn': self.termination_fn,
@@ -44,7 +45,7 @@ class Planner():
                             [0., 0., 1.]
                         ], device=self.device)
         self.far_clip = 1.
-        self.N_training_cameras = 1000
+        self.N_training_cameras = 100
         # Initialize the VoxelGrid
         self.vgrid = VoxelGrid(self.param_dict, 3, self.device)
         
@@ -107,7 +108,7 @@ class Planner():
 
         tnow = time.time()
         torch.cuda.synchronize()
-        print("c2w shape: ", c2w[0,:,:])
+        # print("c2w shape: ", c2w[0,:,:])
         image, depth, output = self.vgrid.camera_voxel_intersection(self.K, c2w, self.far_clip)
         torch.cuda.synchronize()
         print("Time taken: ", time.time() - tnow)
@@ -174,7 +175,7 @@ class Planner():
 
         N_sampled_cameras = positions.shape[0]
         positions_cart = self.vgrid.voxel_grid_centers[positions[:,0], positions[:,1], positions[:,2]]
-        print("positions_cart: ", positions_cart)
+        # print("positions_cart: ", positions_cart)
         c2w = torch.eye(4, device=self.device)[None].expand(N_sampled_cameras, -1, -1).clone()
         c2w[:, :3, 3] = torch.stack([positions_cart[:,0], positions_cart[:,1], positions_cart[:,2]], dim=-1)
 
@@ -191,7 +192,7 @@ class Planner():
         images = []
         depths = []
         for c2w in c2w_list:
-            print("c2w shape: ", c2w[0,:,:])
+            # print("c2w shape: ", c2w[0,:,:])
 
             image, depth, _ = self.vgrid.camera_voxel_intersection(self.K, c2w, self.far_clip)
             images.append(image)
@@ -207,24 +208,23 @@ class Planner():
         uncertainty_metric = torch.sum(images, dim=(1, 2))[..., 0]
         return uncertainty_metric
 
-    def generate_dijkstra_paths(self, source):
-        # source = (10,30,0)
+    def generate_dijkstra_paths(self, source, plot_graph = True):
         voxel_grid_3d = self.vgrid.voxel_grid_binary.cpu().numpy()
-        voxel_grid_2d = voxel_grid_3d[:,:,27,None] # 1 where occupied, 0 where unoccupied
+        voxel_grid_2d = voxel_grid_3d[:,:,48:52] # 1 where occupied, 0 where unoccupied
 
         dist_field = dijkstra3d.euclidean_distance_field(np.invert(voxel_grid_2d), source=source)
         print("dist_field: ", dist_field[25,:,0])
-        parents = dijkstra3d.parental_field(dist_field, source=source)
+        parents = dijkstra3d.parental_field(dist_field, source=source, connectivity=6)
 
-        # ax3 = plt.figure().add_subplot(projection='3d')
-        # ax3.voxels(voxel_grid_2d,alpha=1)
+        ax3 = plt.figure().add_subplot(projection='3d')
+        ax3.voxels(voxel_grid_2d,alpha=1)
 
         voxel_inds = np.indices(voxel_grid_2d.shape)
         voxel_inds = np.vstack((voxel_inds[0].flatten(),voxel_inds[1].flatten(),voxel_inds[2].flatten()))
         trajectories = []
         print("num trajectories: ", voxel_inds.shape[1])
-        for i in range(0,voxel_inds.shape[1],1001):
-            target = tuple(voxel_inds[:,i])
+        for i in range(0,voxel_inds.shape[1], 5001):
+            target = tuple(voxel_inds[:,np.random.randint(voxel_inds.shape[1])])
             if voxel_grid_2d[target[0], target[1], target[2]] == 1:
                 print("occupied target!")
                 continue
@@ -233,37 +233,35 @@ class Planner():
             if cost == np.inf:
                 print("infinite cost!")
                 continue
+            if path.shape[0] <= 1:
+                print("no path found!")
+                continue
             print("path: ", path.shape, " target: ", target, " cost: ", cost)
             positions = []
             for position in path:
-                positions.append(position)
-            trajectories.append(positions)
-        return trajectories # list of lists
-
-            # compute the information gain metric for the views here
-        #     ax3.plot(path[:,0], path[:,1], path[:,2],c='g')
-        #     ax3.scatter(target[0], target[1], target[2],c='r')
-        # ax3.scatter(source[0], source[1], source[2], c='c')
-        # plt.savefig("./plots/image_dijkstra.png")
-        # ax3.view_init(azim=0, elev=90)
-        # plt.savefig("./plots/image_dijkstra_top.png")
-
+                positions.append(list(position))
+            ax3.plot(path[:,0], path[:,1], path[:,2],c='g')
+            ax3.scatter(target[0], target[1], target[2],c='r')
+            trajectories.append(np.asarray(positions))
+        ax3.scatter(source[0], source[1], source[2], c='c')
+        ax3.view_init(azim=0, elev=90)
+        plt.savefig("./plots/image_dijkstra_top.png")
+        return trajectories, ax3 
+        
     def score_paths(self, trajectories, eigvals, eigvecs):
-        # TODO: insert scoring function of paths
         trajectory_uncertainties = []
         for trajectory in trajectories:
-            print("trajectory: ", trajectory)
             positions = np.asarray(trajectory, dtype=np.int32)
-            print("positions: ", positions)
+            traj_length = positions.shape[0]
+            if traj_length > 50:
+                positions = positions[0:50, :]
             positions_tensor = torch.from_numpy(positions)
-            print("positions_tensor: ", positions_tensor)
             trajectory_uncertainty_metric = self.generate_info_gain(positions_tensor, eigvals, eigvecs)
             total_trajectory_uncertainty_metric = torch.sum(trajectory_uncertainty_metric) # consider taking a mean over the trajectory
             trajectory_uncertainties.append(total_trajectory_uncertainty_metric.item())
         return np.asarray(trajectory_uncertainties)
 
     def choose_best_path(self, trajectory_uncertainties):
-        # TODO: sort paths by score and choose best
         indices = np.argsort(trajectory_uncertainties)
         lowest_uncertainty = trajectory_uncertainties[indices[-1]]
         return indices[-1]
@@ -271,10 +269,14 @@ class Planner():
 def main():
     planner_class = Planner()
     eigvals, eigvecs = planner_class.generate_training_view_info()
-    trajectories = planner_class.generate_dijkstra_paths(source=(10,30,0))
-    print("trajectories: ", trajectories)
+    trajectories, ax3 = planner_class.generate_dijkstra_paths(source=(0,0,0))
     uncertainties = planner_class.score_paths(trajectories, eigvals, eigvecs)
     print("uncertainties: ", uncertainties)
-
+    best_idx = planner_class.choose_best_path(uncertainties)
+    best_trajectory = trajectories[best_idx]
+    ax3.plot(best_trajectory[:,0], best_trajectory[:,1], best_trajectory[:,2], c='m')
+    ax3.view_init(azim=0, elev=90)
+    plt.savefig("./plots/image_dijkstra_top.png")
+    
 if __name__ == "__main__":
     main()
