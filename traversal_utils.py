@@ -373,7 +373,6 @@ class VoxelGrid:
         else:
             B = c2w.shape[0]    # batch number of poses
             origins, directions = get_rays_batch(H, W, K, c2w, self.device)
-
         # Flatten origins and directions
         origins = origins.reshape(-1, 3)
         directions = directions.reshape(-1, 3)
