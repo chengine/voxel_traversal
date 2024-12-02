@@ -2,7 +2,8 @@ import numpy as np
 import torch
 import open3d as o3d
 import time
-
+import gc
+        
 from camera_utils import get_rays, get_rays_batch
 
 # All these functions are minor modifications to each other to make them fast for their use case
@@ -334,13 +335,26 @@ class VoxelGrid:
                 print("Number of rays remaining: ", len(points))
 
             counter += 1
+            
+        # stack to a Tensor
+        voxel_intersections = torch.cat(voxel_intersections, dim=0)
+        
+        # clear/release memory
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        ray_intersections = torch.cat(ray_intersections, dim=0)
+        
+        # clear/release memory
+        gc.collect()
+        torch.cuda.empty_cache()
 
         # We want to store
         output = {
             # For voxels that do intersect the grid, 
             # we store a tuple (voxel_index, ray_index) for every voxel-ray intersection
-            'voxel_intersections': torch.cat(voxel_intersections, dim=0),       
-            'ray_intersections': torch.cat(ray_intersections, dim=0),                            
+            'voxel_intersections': voxel_intersections,       
+            'ray_intersections': ray_intersections,                            
             
             # For rays that terminate due to the termination fn, we store the voxel index, 
             # the ray index, and the value of the grid at termination
