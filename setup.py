@@ -7,5 +7,5 @@ setup(
     author="Timothy Chen",
     author_email="chengine@stanford.edu",
     description="GPU-based voxel ray traversal in Pytorch",
-    packages=find_packages(),
+    packages=find_packages()
 )
