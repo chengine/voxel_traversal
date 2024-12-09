@@ -4,7 +4,7 @@ import open3d as o3d
 import time
 import gc
         
-from camera_utils import get_rays, get_rays_batch
+from voxel_traversal.camera_utils import get_rays, get_rays_batch
 
 # All these functions are minor modifications to each other to make them fast for their use case
 # They all hinge on the core function: one-step voxel ray intersection
