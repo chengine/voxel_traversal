@@ -4,3 +4,4 @@ data
 *.glb
 *.gltf
 *.obj
+*.egg-info
