@@ -124,4 +124,5 @@ print("Time taken: ", time.time() - tnow)
 #     combined_image = np.concatenate([combined_image, alpha[..., None]], axis=-1)
 #     imageio.imwrite(f'images/{i}.png', (combined_image * 255).astype(np.uint8))
 
+
 # %%
