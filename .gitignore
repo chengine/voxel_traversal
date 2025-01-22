@@ -1,5 +1,6 @@
 *
 !run.py
+!setup.py
 !voxel_traversal
 data
 *.png
