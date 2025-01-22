@@ -110,6 +110,12 @@ image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
 torch.cuda.synchronize()
 print("Time taken: ", time.time() - tnow)
 
+tnow = time.time()
+torch.cuda.synchronize()
+image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
+torch.cuda.synchronize()
+print("Time taken: ", time.time() - tnow)
+
 # for i, (img, dep) in enumerate(zip(image, depth)):
 #     dep = dep / far_clip
 #     depth_mask = (dep == 0).squeeze()
