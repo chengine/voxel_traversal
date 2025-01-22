@@ -54,7 +54,6 @@ vgrid.populate_voxel_grid_from_points(torch.tensor(points, device=device), torch
 
 # o3d.visualization.draw_geometries([scene])
 
-#%%
 def look_at(location, target, up):
     z = (location - target)
     z /= torch.norm(z)
@@ -111,16 +110,18 @@ image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
 torch.cuda.synchronize()
 print("Time taken: ", time.time() - tnow)
 
-for i, (img, dep) in enumerate(zip(image, depth)):
-    dep = dep / far_clip
-    depth_mask = (dep == 0).squeeze()
+# for i, (img, dep) in enumerate(zip(image, depth)):
+#     dep = dep / far_clip
+#     depth_mask = (dep == 0).squeeze()
 
-    #combined_image = torch.concatenate([img[..., 0], dep], axis=1)
-    #combined_image = cmap(combined_image.cpu().numpy())[..., :3]
-    depth = cmap(dep.cpu().numpy())[..., :3]
-    depth[depth_mask.cpu().numpy()] = 0
-    combined_image = np.concatenate([img.cpu().numpy(), depth], axis=1)
+#     #combined_image = torch.concatenate([img[..., 0], dep], axis=1)
+#     #combined_image = cmap(combined_image.cpu().numpy())[..., :3]
+#     depth = cmap(dep.cpu().numpy())[..., :3]
+#     depth[depth_mask.cpu().numpy()] = 0
+#     combined_image = np.concatenate([img.cpu().numpy(), depth], axis=1)
 
-    alpha = (combined_image > 0).any(axis=-1)
-    combined_image = np.concatenate([combined_image, alpha[..., None]], axis=-1)
-    imageio.imwrite(f'images/{i}.png', (combined_image * 255).astype(np.uint8))
+#     alpha = (combined_image > 0).any(axis=-1)
+#     combined_image = np.concatenate([combined_image, alpha[..., None]], axis=-1)
+#     imageio.imwrite(f'images/{i}.png', (combined_image * 255).astype(np.uint8))
+
+# %%

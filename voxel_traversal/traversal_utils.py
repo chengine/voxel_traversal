@@ -481,6 +481,8 @@ class VoxelGrid:
         # torch.cuda.synchronize()
         tdiff = 0
 
+        traversed_voxels = torch.zeros_like(self.voxel_grid_binary, dtype=torch.bool)
+
         # DATA TENSOR
         #data = torch.cat([frac_indices, voxel_index, indices_directions, sign_directions, half_sign_directions], dim=-1)
 
@@ -505,6 +507,8 @@ class VoxelGrid:
 
             # Begin the incremental traversal procedure
             terminated, values = self.termination_fn(voxel_index_, indices_directions_)
+
+            traversed_voxels[voxel_index_[:, 0], voxel_index_[:, 1], voxel_index_[:, 2]] = True
 
             # Store the terminated rays
             num_terminated_now = num_terminated + torch.sum(terminated)
@@ -603,6 +607,7 @@ class VoxelGrid:
             'terminated_voxel_index': terminated_voxel_index.to(torch.int32),
             'terminated_ray_index': terminated_ray_index.to(torch.int32),
             'terminated_voxel_values': terminated_voxel_values,
+            'traversed_voxels': traversed_voxels,   # N x N x N voxel grid of booleans
 
             # For rays that (1) don't hit the voxel grid at all, (2) exit the voxel grid, or (3) reach the end of the ray length
             # are stored by their ray index. Although functionally, these three categories are treated the same (i.e. they don't render to anything),
