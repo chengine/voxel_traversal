@@ -5,6 +5,7 @@ import torch
 import open3d as o3d
 import time
 import matplotlib
+import matplotlib.pyplot as plt
 import imageio
 
 from voxel_traversal.traversal_utils import VoxelGrid
@@ -57,11 +58,10 @@ vgrid.populate_voxel_grid_from_points(torch.tensor(points, device=device), torch
 def look_at(location, target, up):
     z = (location - target)
     z /= torch.norm(z)
-    x = torch.cross(up, z)
+    x = torch.cross(up, z, dim=-1)
     x /= torch.norm(x)
-    y = torch.cross(z, x)
+    y = torch.cross(z, x, dim=-1)
     y /= torch.norm(y)
-
     R = torch.stack([x, y, z], dim=-1)
     return R
 
@@ -71,51 +71,51 @@ K = torch.tensor([
     [0., 0., 1.]
 ], device=device)
 
-N_cameras = 1000
-t = torch.linspace(0., 2*np.pi, N_cameras, device=device)
-far_clip = 1.
 
-depth_images = []
-directions = []
-origins = []
+tnows = []
+num_cameras = [10, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+for i in num_cameras:
+    N_cameras = i
+    t = torch.linspace(0., 2*np.pi, N_cameras, device=device)
+    far_clip = 1.
 
-c2w = torch.eye(4, device=device)[None].expand(N_cameras, -1, -1).clone()
-c2w[:, :3, 3] = torch.stack([0.25*torch.cos(t), 0.25*torch.sin(t), torch.zeros_like(t)], dim=-1)
+    depth_images = []
+    directions = []
+    origins = []
 
-target = torch.zeros(3, device=device)[None].expand(N_cameras, -1)
-up = torch.tensor([0., 0., 1.], device=device)[None].expand(N_cameras, -1)
-c2w[:, :3, :3] = look_at(c2w[:, :3, 3], target, up)
+    c2w = torch.eye(4, device=device)[None].expand(N_cameras, -1, -1).clone()
+    c2w[:, :3, 3] = torch.stack([0.25*torch.cos(t), 0.25*torch.sin(t), torch.zeros_like(t)], dim=-1)
+
+    target = torch.zeros(3, device=device)[None].expand(N_cameras, -1)
+    up = torch.tensor([0., 0., 1.], device=device)[None].expand(N_cameras, -1)
+    c2w[:, :3, :3] = look_at(c2w[:, :3, 3], target, up)
+
+    elapsed = []
+    for j in range(1):
+        tnow = time.time()
+        torch.cuda.synchronize()
+        image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
+        torch.cuda.synchronize()
+        elapsed.append(time.time() - tnow)
+        print(f"Time taken ({i}): ", time.time() - tnow)
+    tnows.append(np.array(elapsed)[1:].mean())
+
+fig, ax = plt.subplots()
+ax.plot(num_cameras[1:], tnows[1:])
+ax.plot([0, 1], [0, 1], transform=ax.transAxes, color='black', linestyle='dashed')
+ax.set_xlabel('Number of cameras')
+ax.set_ylabel('Time (s)')
+ax.set_yscale('log')
+ax.set_xscale('log')
+ax.set_xlim([10, 5000])
+ax.set_ylim([np.array(tnows).min(), np.array(tnows).max()])
+
+plt.savefig('time_taken.png')
 
 # combined image
 cmap = matplotlib.cm.get_cmap('turbo')
 
-# c2w_list = torch.split(c2w, 10)
-# images = []
-# depths = []
-# outputs = []
-
-# with torch.no_grad():
-#     counter = 0
-#     for c2w in c2w_list:
-
-tnow = time.time()
-torch.cuda.synchronize()
-image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
-torch.cuda.synchronize()
-print("Time taken: ", time.time() - tnow)
-
-tnow = time.time()
-torch.cuda.synchronize()
-image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
-torch.cuda.synchronize()
-print("Time taken: ", time.time() - tnow)
-
-tnow = time.time()
-torch.cuda.synchronize()
-image, depth, output = vgrid.camera_voxel_intersection(K, c2w, far_clip)
-torch.cuda.synchronize()
-print("Time taken: ", time.time() - tnow)
-
+###NOTE: Uncomment to save images
 # for i, (img, dep) in enumerate(zip(image, depth)):
 #     dep = dep / far_clip
 #     depth_mask = (dep == 0).squeeze()
@@ -129,6 +129,5 @@ print("Time taken: ", time.time() - tnow)
 #     alpha = (combined_image > 0).any(axis=-1)
 #     combined_image = np.concatenate([combined_image, alpha[..., None]], axis=-1)
 #     imageio.imwrite(f'images/{i}.png', (combined_image * 255).astype(np.uint8))
-
 
 # %%
