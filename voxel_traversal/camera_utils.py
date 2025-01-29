@@ -37,7 +37,7 @@ def get_rays_batch(H, W, K, c2w, device):
 
     rays_d = rays_d.permute(2, 0, 1, 3)
     rays_o = rays_o.permute(2, 0, 1, 3)
-    print(rays_o.shape, rays_d.shape)
+    # print(rays_o.shape, rays_d.shape)
     return rays_o, rays_d
 
 def look_at(location, target, up):

@@ -200,7 +200,8 @@ class VoxelGrid:
         t = (xyz_max - points) / directions
 
         min_t, min_idx = torch.min(t, dim=-1)       # N, idx tells us which voxel index dimension to move in (+- 1)
-
+        min_t_inf_idx = torch.isinf(min_t)
+        min_t[min_t_inf_idx] = 0.0
         # torch.cuda.synchronize()
         # print("Time taken for getting min: ", time.time() - tnow)
 
@@ -330,9 +331,9 @@ class VoxelGrid:
 
             # torch.cuda.synchronize()
             # print("Time taken for cleanup: ", time.time() - tnow)
-            if counter % 50 == 0:
-                print('Ray Tracing Step: ', counter)
-                print("Number of rays remaining: ", len(points))
+            # if counter % 50 == 0:
+            #     print('Ray Tracing Step: ', counter)
+            #     print("Number of rays remaining: ", len(points))
 
             counter += 1
             
