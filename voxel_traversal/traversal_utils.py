@@ -11,7 +11,12 @@ from voxel_traversal.camera_utils import get_rays, get_rays_batch
 @torch.compile
 def one_step_voxel_ray_intersection(frac_indices, indices, indices_directions, sign_directions, half_sign_directions):
 
-    min_t, min_idx = torch.min((indices + half_sign_directions - frac_indices).div_(indices_directions), dim=-1)
+    steps = (indices + half_sign_directions - frac_indices).div_(indices_directions)
+
+    # Replace infs with a large number
+    steps[torch.isinf(steps)] = 1e6
+
+    min_t, min_idx = torch.min(steps, dim=-1)
     min_t_unsq = min_t.unsqueeze(-1)
     min_idx = min_idx.unsqueeze(-1)
 

@@ -2,6 +2,7 @@
 !run.py
 !setup.py
 !voxel_traversal
+!distributions
 data
 *.png
 *.jpg
