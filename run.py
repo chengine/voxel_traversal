@@ -73,7 +73,7 @@ K = torch.tensor([
 
 
 tnows = []
-num_cameras = [10, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+num_cameras = [1000]
 for i in num_cameras:
     N_cameras = i
     t = torch.linspace(0., 2*np.pi, N_cameras, device=device)
@@ -100,34 +100,36 @@ for i in num_cameras:
         print(f"Time taken ({i}): ", time.time() - tnow)
     tnows.append(np.array(elapsed)[1:].mean())
 
-fig, ax = plt.subplots()
-ax.plot(num_cameras[1:], tnows[1:])
-ax.plot([0, 1], [0, 1], transform=ax.transAxes, color='black', linestyle='dashed')
-ax.set_xlabel('Number of cameras')
-ax.set_ylabel('Time (s)')
-ax.set_yscale('log')
-ax.set_xscale('log')
-ax.set_xlim([10, 5000])
-ax.set_ylim([np.array(tnows).min(), np.array(tnows).max()])
+# plt.imshow(image[0].cpu().numpy())
 
-plt.savefig('time_taken.png')
+# fig, ax = plt.subplots()
+# ax.plot(num_cameras[1:], tnows[1:])
+# ax.plot([0, 1], [0, 1], transform=ax.transAxes, color='black', linestyle='dashed')
+# ax.set_xlabel('Number of cameras')
+# ax.set_ylabel('Time (s)')
+# ax.set_yscale('log')
+# ax.set_xscale('log')
+# ax.set_xlim([10, 5000])
+# ax.set_ylim([np.array(tnows).min(), np.array(tnows).max()])
 
-# combined image
-cmap = matplotlib.cm.get_cmap('turbo')
+# plt.savefig('time_taken.png')
+
+# # combined image
+# cmap = matplotlib.cm.get_cmap('turbo')
 
 ###NOTE: Uncomment to save images
-# for i, (img, dep) in enumerate(zip(image, depth)):
-#     dep = dep / far_clip
-#     depth_mask = (dep == 0).squeeze()
+for i, (img, dep) in enumerate(zip(image, depth)):
+    dep = dep / far_clip
+    depth_mask = (dep == 0).squeeze()
 
-#     #combined_image = torch.concatenate([img[..., 0], dep], axis=1)
-#     #combined_image = cmap(combined_image.cpu().numpy())[..., :3]
-#     depth = cmap(dep.cpu().numpy())[..., :3]
-#     depth[depth_mask.cpu().numpy()] = 0
-#     combined_image = np.concatenate([img.cpu().numpy(), depth], axis=1)
+    #combined_image = torch.concatenate([img[..., 0], dep], axis=1)
+    #combined_image = cmap(combined_image.cpu().numpy())[..., :3]
+    depth = cmap(dep.cpu().numpy())[..., :3]
+    depth[depth_mask.cpu().numpy()] = 0
+    combined_image = np.concatenate([img.cpu().numpy(), depth], axis=1)
 
-#     alpha = (combined_image > 0).any(axis=-1)
-#     combined_image = np.concatenate([combined_image, alpha[..., None]], axis=-1)
-#     imageio.imwrite(f'images/{i}.png', (combined_image * 255).astype(np.uint8))
+    alpha = (combined_image > 0).any(axis=-1)
+    combined_image = np.concatenate([combined_image, alpha[..., None]], axis=-1)
+    imageio.imwrite(f'images/{i}.png', (combined_image * 255).astype(np.uint8))
 
 # %%
