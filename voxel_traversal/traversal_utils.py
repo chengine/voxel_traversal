@@ -201,6 +201,8 @@ class VoxelGrid:
 
         min_t, min_idx = torch.min(t, dim=-1)       # N, idx tells us which voxel index dimension to move in (+- 1)
         
+        min_t_inf_idx = torch.isinf(min_t)
+        min_t[min_t_inf_idx] = 0.0
         # torch.cuda.synchronize()
         # print("Time taken for getting min: ", time.time() - tnow)
 
@@ -270,7 +272,7 @@ class VoxelGrid:
 
         # TODO: NOT TERMINATING!!!
         counter = 0
-        directions += 1e-6*torch.randn_like(directions) 
+        # directions += 1e-6*torch.ones_like(directions) 
         while len(points) > 0:
 
             # tnow = time.time()
